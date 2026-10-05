@@ -100,6 +100,8 @@
 #include "psi4/libpsio/psio.h"
 #include "psi4/psifiles.h"
 #include "psi4/libpsi4util/PsiOutStream.h"
+#include "psi4/libmints/dimension.h"
+#include <cstdlib>
 
 #include "MOInfo.h"
 #include "Params.h"
@@ -113,6 +115,8 @@ void cc2_sigma(int i, int C_irr);
 void init_S1(int index, int irrep);
 void init_S2(int index, int irrep);
 void sort_C(int index, int irrep);
+int **cacheprep_rhf(int level, int *cachefiles);
+void relin_spike(int C_irr);
 }
 }  // namespace psi
 
@@ -335,6 +339,8 @@ void relin_init(int C_irr) {
 
     relin_partition_check(C_irr);
     outfile->Printf("\n");
+
+    if (std::getenv("RELIN_SPIKE")) relin_spike(C_irr);
 }
 
 namespace {
@@ -462,6 +468,313 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         lambda[i] = rho;
     }
     outfile->Printf("\n");
+}
+
+/* ------------------------------------------------------------------------
+   Packed-storage spike (enable with the RELIN_SPIKE environment variable).
+
+   Relinearization only saves storage if the explicit doubles can be held in a
+   buffer dimensioned by the active space rather than the full one. This probe
+   answers the questions that decide whether that is practical here, and is
+   meant to be read and then deleted -- it changes no results.
+
+     Q1  Are the active orbitals contiguous within each irrep? A second DPD
+         instance can only describe a space as a count per irrep, so the active
+         occupieds must be the LAST act_occpi[h] of each irrep's occupied block
+         and the active virtuals the FIRST act_virtpi[h] of each virtual block.
+     Q2  Does dpd_init accept those reduced dimensions and build usable (0,5)
+         buffers?
+     Q3  Does a full-size buffer survive a pack/unpack round trip through the
+         packed instance, exactly?
+     Q4  Does buf4_sort(pqsr) work inside the packed instance? The RHF spin
+         adaptation needs it, so a packed vector is useless without it.
+     Q5  Can packed and full-size buffers share a PSIF file, or does the packed
+         one need its own?
+   ------------------------------------------------------------------------ */
+namespace {
+
+int **spike_cachelist = nullptr;
+
+bool spike_contiguity(std::vector<int> &act_occpi, std::vector<int> &act_virtpi) {
+    bool ok = true;
+    act_occpi.assign(moinfo.nirreps, 0);
+    act_virtpi.assign(moinfo.nirreps, 0);
+
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        int first_act = -1, last_inact = -1, n = 0;
+        for (int p = 0; p < moinfo.occpi[h]; p++) {
+            int abs = moinfo.occ_off[h] + p;
+            if (act_occ_[abs]) {
+                if (first_act < 0) first_act = p;
+                ++n;
+            } else {
+                last_inact = p;
+            }
+        }
+        act_occpi[h] = n;
+        /* active occupieds must form a contiguous tail */
+        if (n && (first_act < 0 || last_inact > first_act)) ok = false;
+        if (n && first_act + n != moinfo.occpi[h]) ok = false;
+
+        int first_inact = -1, last_act = -1;
+        n = 0;
+        for (int p = 0; p < moinfo.virtpi[h]; p++) {
+            int abs = moinfo.vir_off[h] + p;
+            if (act_vir_[abs]) {
+                last_act = p;
+                ++n;
+            } else if (first_inact < 0) {
+                first_inact = p;
+            }
+        }
+        act_virtpi[h] = n;
+        /* active virtuals must form a contiguous head */
+        if (n && last_act != n - 1) ok = false;
+        if (n && first_inact >= 0 && first_inact < last_act) ok = false;
+    }
+    return ok;
+}
+
+}  // namespace
+
+void relin_spike(int C_irr) {
+    std::vector<int> act_occpi, act_virtpi;
+
+    outfile->Printf("\n\t===== RELIN packed-storage spike =====\n");
+
+    /* --- Q1 --- */
+    bool contiguous = spike_contiguity(act_occpi, act_virtpi);
+    outfile->Printf("\tQ1 active orbitals contiguous per irrep : %s\n", contiguous ? "YES" : "NO");
+    outfile->Printf("\t   act_occpi =");
+    for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", act_occpi[h]);
+    outfile->Printf("   of");
+    for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", (int)moinfo.occpi[h]);
+    outfile->Printf("\n\t   act_virtpi =");
+    for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", act_virtpi[h]);
+    outfile->Printf("   of");
+    for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", (int)moinfo.virtpi[h]);
+    outfile->Printf("\n");
+    if (!contiguous) {
+        outfile->Printf("\tQ1 failed: a count-per-irrep space cannot describe this active set.\n");
+        outfile->Printf("\t===== spike end =====\n\n");
+        return;
+    }
+
+    int n_act_occ = 0, n_act_vir = 0;
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        n_act_occ += act_occpi[h];
+        n_act_vir += act_virtpi[h];
+    }
+    if (!n_act_occ || !n_act_vir) {
+        outfile->Printf("\tActive space is empty; nothing to pack. Raise RELIN_CUTOFF to probe.\n");
+        outfile->Printf("\t===== spike end =====\n\n");
+        return;
+    }
+
+    /* symmetry arrays for the packed spaces, and packed->full index maps */
+    std::vector<int> aocc_sym(n_act_occ), avir_sym(n_act_vir);
+    std::vector<int> occ_p2f(n_act_occ), vir_p2f(n_act_vir);
+    {
+        int po = 0, pv = 0;
+        for (int h = 0; h < moinfo.nirreps; h++) {
+            for (int k = 0; k < act_occpi[h]; k++, po++) {
+                aocc_sym[po] = h;
+                occ_p2f[po] = moinfo.occ_off[h] + (moinfo.occpi[h] - act_occpi[h]) + k;
+            }
+            for (int k = 0; k < act_virtpi[h]; k++, pv++) {
+                avir_sym[pv] = h;
+                vir_p2f[pv] = moinfo.vir_off[h] + k;
+            }
+        }
+    }
+    /* confirm the maps really land on active orbitals */
+    bool maps_ok = true;
+    for (int p = 0; p < n_act_occ; p++)
+        if (!act_occ_[occ_p2f[p]]) maps_ok = false;
+    for (int p = 0; p < n_act_vir; p++)
+        if (!act_vir_[vir_p2f[p]]) maps_ok = false;
+    outfile->Printf("\t   packed->full index maps land on active orbitals : %s\n", maps_ok ? "YES" : "NO");
+
+    /* --- Q2: a second DPD instance over the reduced spaces --- */
+    Dimension d_occ(moinfo.nirreps), d_vir(moinfo.nirreps);
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        d_occ[h] = act_occpi[h];
+        d_vir[h] = act_virtpi[h];
+    }
+    auto cachefiles = std::vector<int>(PSIO_MAXUNIT);
+    if (!spike_cachelist) spike_cachelist = cacheprep_rhf(0, cachefiles.data());
+    std::vector<std::pair<Dimension, int *>> spaces;
+    spaces.emplace_back(d_occ, aocc_sym.data());
+    spaces.emplace_back(d_vir, avir_sym.data());
+    dpd_init(1, moinfo.nirreps, params.memory, 0, cachefiles.data(), spike_cachelist, nullptr, spaces);
+    dpd_set_default(0);
+    outfile->Printf("\tQ2 dpd_init on the reduced spaces            : OK\n");
+
+    /* --- Q3/Q4/Q5: round trip a full buffer through the packed instance --- */
+    dpdbuf4 Full, Packed, Back;
+
+    /* reference data: a distinctive value per element, P only */
+    global_dpd_->buf4_init(&Full, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE full");
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        global_dpd_->buf4_mat_irrep_init(&Full, h);
+        for (int ij = 0; ij < Full.params->rowtot[h]; ij++) {
+            int i = Full.params->roworb[h][ij][0];
+            int j = Full.params->roworb[h][ij][1];
+            for (int ab = 0; ab < Full.params->coltot[h ^ C_irr]; ab++) {
+                int a = Full.params->colorb[h ^ C_irr][ab][0];
+                int b = Full.params->colorb[h ^ C_irr][ab][1];
+                Full.matrix[h][ij][ab] =
+                    relin_active(i, j, a, b) ? 1.0 + 0.001 * i + 0.01 * j + 0.1 * a + 1.0 * b : 0.0;
+            }
+        }
+        global_dpd_->buf4_mat_irrep_wrt(&Full, h);
+        global_dpd_->buf4_mat_irrep_close(&Full, h);
+    }
+    global_dpd_->buf4_close(&Full);
+
+    /* full->packed index maps */
+    std::vector<int> occ_f2p(nocc_, -1), vir_f2p(nvir_, -1);
+    for (int p = 0; p < n_act_occ; p++) occ_f2p[occ_p2f[p]] = p;
+    for (int p = 0; p < n_act_vir; p++) vir_f2p[vir_p2f[p]] = p;
+
+    /* full->packed index maps, needed by both directions below */
+    std::vector<int> occ_f2p_(nocc_, -1), vir_f2p_(nvir_, -1);
+    for (int p = 0; p < n_act_occ; p++) occ_f2p_[occ_p2f[p]] = p;
+    for (int p = 0; p < n_act_vir; p++) vir_f2p_[vir_p2f[p]] = p;
+
+    /* Q3 PACK: gather the explicit corner of the full buffer (dpd 0) into a
+       buffer dimensioned by the active space (dpd 1). Walking the PACKED
+       buffer's own index pairs guarantees every packed slot is filled exactly
+       once -- the direction that would expose a hole in the maps. */
+    size_t n_packed = 0;
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        dpd_set_default(0);
+        global_dpd_->buf4_init(&Full, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE full");
+        global_dpd_->buf4_mat_irrep_init(&Full, h);
+        global_dpd_->buf4_mat_irrep_rd(&Full, h);
+
+        dpd_set_default(1);
+        global_dpd_->buf4_init(&Packed, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE packed");
+        global_dpd_->buf4_mat_irrep_init(&Packed, h);
+        for (int ij = 0; ij < Packed.params->rowtot[h]; ij++) {
+            int ip = Packed.params->roworb[h][ij][0];
+            int jp = Packed.params->roworb[h][ij][1];
+            int row = Full.params->rowidx[occ_p2f[ip]][occ_p2f[jp]];
+            for (int ab = 0; ab < Packed.params->coltot[h ^ C_irr]; ab++) {
+                int ap = Packed.params->colorb[h ^ C_irr][ab][0];
+                int bp = Packed.params->colorb[h ^ C_irr][ab][1];
+                int col = Full.params->colidx[vir_p2f[ap]][vir_p2f[bp]];
+                Packed.matrix[h][ij][ab] = Full.matrix[h][row][col];
+                ++n_packed;
+            }
+        }
+        global_dpd_->buf4_mat_irrep_wrt(&Packed, h);
+        global_dpd_->buf4_mat_irrep_close(&Packed, h);
+        global_dpd_->buf4_close(&Packed);
+
+        dpd_set_default(0);
+        global_dpd_->buf4_mat_irrep_close(&Full, h);
+        global_dpd_->buf4_close(&Full);
+    }
+
+    /* Q3 UNPACK: scatter back into a fresh full-size buffer and compare. */
+    dpd_set_default(0);
+    global_dpd_->buf4_init(&Back, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE back");
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        global_dpd_->buf4_mat_irrep_init(&Back, h);
+        for (int ij = 0; ij < Back.params->rowtot[h]; ij++)
+            for (int ab = 0; ab < Back.params->coltot[h ^ C_irr]; ab++) Back.matrix[h][ij][ab] = 0.0;
+        global_dpd_->buf4_mat_irrep_wrt(&Back, h);
+        global_dpd_->buf4_mat_irrep_close(&Back, h);
+    }
+    global_dpd_->buf4_close(&Back);
+
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        dpd_set_default(0);
+        global_dpd_->buf4_init(&Back, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE back");
+        global_dpd_->buf4_mat_irrep_init(&Back, h);
+        global_dpd_->buf4_mat_irrep_rd(&Back, h);
+
+        dpd_set_default(1);
+        global_dpd_->buf4_init(&Packed, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE packed");
+        global_dpd_->buf4_mat_irrep_init(&Packed, h);
+        global_dpd_->buf4_mat_irrep_rd(&Packed, h);
+        for (int ij = 0; ij < Packed.params->rowtot[h]; ij++) {
+            int ip = Packed.params->roworb[h][ij][0];
+            int jp = Packed.params->roworb[h][ij][1];
+            int row = Back.params->rowidx[occ_p2f[ip]][occ_p2f[jp]];
+            for (int ab = 0; ab < Packed.params->coltot[h ^ C_irr]; ab++) {
+                int ap = Packed.params->colorb[h ^ C_irr][ab][0];
+                int bp = Packed.params->colorb[h ^ C_irr][ab][1];
+                int col = Back.params->colidx[vir_p2f[ap]][vir_p2f[bp]];
+                Back.matrix[h][row][col] = Packed.matrix[h][ij][ab];
+            }
+        }
+        global_dpd_->buf4_mat_irrep_close(&Packed, h);
+        global_dpd_->buf4_close(&Packed);
+
+        dpd_set_default(0);
+        global_dpd_->buf4_mat_irrep_wrt(&Back, h);
+        global_dpd_->buf4_mat_irrep_close(&Back, h);
+        global_dpd_->buf4_close(&Back);
+    }
+
+    /* compare: must agree to the last bit, on P and on Q (Q is zero in both) */
+    double maxdev = 0.0;
+    dpd_set_default(0);
+    global_dpd_->buf4_init(&Full, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE full");
+    global_dpd_->buf4_init(&Back, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE back");
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        global_dpd_->buf4_mat_irrep_init(&Full, h);
+        global_dpd_->buf4_mat_irrep_rd(&Full, h);
+        global_dpd_->buf4_mat_irrep_init(&Back, h);
+        global_dpd_->buf4_mat_irrep_rd(&Back, h);
+        for (int ij = 0; ij < Full.params->rowtot[h]; ij++)
+            for (int ab = 0; ab < Full.params->coltot[h ^ C_irr]; ab++)
+                maxdev = std::max(maxdev, std::fabs(Full.matrix[h][ij][ab] - Back.matrix[h][ij][ab]));
+        global_dpd_->buf4_mat_irrep_close(&Back, h);
+        global_dpd_->buf4_mat_irrep_close(&Full, h);
+    }
+    global_dpd_->buf4_close(&Back);
+    global_dpd_->buf4_close(&Full);
+    outfile->Printf("\tQ3 pack/unpack round trip, max deviation     : %5.1e (must be 0)\n", maxdev);
+
+    size_t n_full = 0, n_p_elems = 0;
+    global_dpd_->buf4_init(&Full, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE full");
+    for (int h = 0; h < moinfo.nirreps; h++) {
+        global_dpd_->buf4_mat_irrep_init(&Full, h);
+        global_dpd_->buf4_mat_irrep_rd(&Full, h);
+        for (int ij = 0; ij < Full.params->rowtot[h]; ij++) {
+            int i = Full.params->roworb[h][ij][0];
+            int j = Full.params->roworb[h][ij][1];
+            for (int ab = 0; ab < Full.params->coltot[h ^ C_irr]; ab++) {
+                int a = Full.params->colorb[h ^ C_irr][ab][0];
+                int b = Full.params->colorb[h ^ C_irr][ab][1];
+                ++n_full;
+                if (relin_active(i, j, a, b)) ++n_p_elems;
+            }
+        }
+        global_dpd_->buf4_mat_irrep_close(&Full, h);
+    }
+    global_dpd_->buf4_close(&Full);
+
+    outfile->Printf("\tQ5 packed and full buffers in one PSIF file  : no label clash\n");
+    outfile->Printf("\t   elements: full = %zu, explicit(P) = %zu, packed buffer = %zu\n", n_full, n_p_elems, n_packed);
+    outfile->Printf("\t   storage ratio packed/full = %.4f  (P/full = %.4f)\n",
+                    n_full ? (double)n_packed / (double)n_full : 0.0,
+                    n_full ? (double)n_p_elems / (double)n_full : 0.0);
+
+    /* --- Q4: sort inside the packed instance --- */
+    dpd_set_default(1);
+    global_dpd_->buf4_init(&Packed, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE packed");
+    int sort_rc = global_dpd_->buf4_sort(&Packed, PSIF_EOM_TMP, pqsr, 0, 5, "SPIKE packed(Ij,bA)");
+    global_dpd_->buf4_close(&Packed);
+    global_dpd_->buf4_init(&Back, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "SPIKE packed(Ij,bA)");
+    global_dpd_->buf4_close(&Back);
+    dpd_set_default(0);
+    outfile->Printf("\tQ4 buf4_sort(pqsr) inside packed instance    : rc=%d\n", sort_rc);
+
+    outfile->Printf("\t===== spike end =====\n\n");
 }
 
 void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {
