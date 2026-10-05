@@ -442,8 +442,12 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         psio_read_entry(PSIF_EOM_CME, lbl, (char *)&C0, sizeof(double));
                     }
 
-                    sprintf(lbl, "%s %d", "CMnEf", i);
-                    global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+                    {
+                        int c2f;
+                        const char *c2l;
+                        relin_open_C2(i, C_irr, &c2f, &c2l);
+                        global_dpd_->buf4_init(&CMnEf, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
+                    }
                     global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_TMP, "CMnEf");
                     global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, pqsr, 0, 5, "CMnfE");
                     global_dpd_->buf4_close(&CMnEf);
@@ -489,8 +493,12 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         sprintf(lbl, "%s %d", "SIA", j);
                         global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
                         tval = 2.0 * global_dpd_->file2_dot(&CME, &SIA);
-                        sprintf(lbl, "%s %d", "SIjAb", j);
-                        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
+                        {
+                            int s2f;
+                            const char *s2l;
+                            relin_open_S2(j, C_irr, &s2f, &s2l);
+                            global_dpd_->buf4_init(&SIjAb, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
+                        }
                         tval += global_dpd_->buf4_dot(&CMnEf, &SIjAb);
                         global_dpd_->file2_close(&SIA);
                         if (params.full_matrix) {

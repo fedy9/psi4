@@ -92,17 +92,27 @@ const char *relin_work_C2_label();
 const char *relin_work_S2_label();
 int relin_work_file();
 
+/* Uniform accessors for the Davidson's stored doubles vectors. These are the
+   only thing the solver needs to know about packing: each returns the (file,
+   label) to open, materialising the vector into a full-size working buffer
+   first when the store is packed. With RELIN_PACKED off -- and for EOM-CCSD and
+   EOM-CC3, which never set it -- they hand back the conventional
+   "CMnEf i" / "SIjAb i" and cost nothing, so a converted call site behaves
+   exactly as before. Keeping the policy in one place is what stops the read and
+   write sides drifting apart, the same reason the P/Q masking has one
+   predicate. */
+void relin_open_C2(int index, int C_irr, int *file, const char **label);
+void relin_open_S2(int index, int C_irr, int *file, const char **label);
+
+/* Write a doubles vector back into the store, packing it when packed. */
+void relin_put_C2(int index, int C_irr, dpdbuf4 *src);
+void relin_put_S2(int index, int C_irr, dpdbuf4 *src);
+
 /* packed vector <-> full-size working buffer */
 void relin_load_C2(int index, int C_irr);
 void relin_load_S2(int index, int C_irr);
 void relin_save_C2(int index, int C_irr);
 void relin_save_S2(int index, int C_irr);
-
-/* Pack the Davidson doubles preconditioner so the explicit part can be
-   preconditioned in the packed instance, with the same values the full-size
-   diagonal would have supplied. */
-void relin_pack_diagonal(int C_irr);
-const char *relin_packed_D2_label();
 
 /* Run a block of doubles-only DPD work in the packed instance. Restores the
    default instance on every exit path, including exceptions. A buf4_init under

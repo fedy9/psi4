@@ -345,7 +345,6 @@ void relin_init(int C_irr) {
 
     relin_packed_setup(C_irr);
     relin_packed_check(C_irr);
-    if (relin_packed_on()) relin_pack_diagonal(C_irr);
     outfile->Printf("\n");
 
 }
@@ -785,18 +784,6 @@ const char *relin_packed_S2_label(int index) {
     return lbl;
 }
 
-const char *relin_packed_D2_label() { return "RELIN DIjAb packed"; }
-
-void relin_pack_diagonal(int C_irr) {
-    if (!packed_ready_) return;
-    /* The eliminated part of the diagonal is never used once the subspace is
-       packed, so gathering the explicit corner loses nothing -- and taking the
-       values from the existing full-size diagonal keeps the packed path
-       numerically identical to the masked one. */
-    relin_packed_init(PSIF_EOM_D, relin_packed_D2_label(), C_irr);
-    relin_pack(PSIF_EOM_D, "DIjAb", PSIF_EOM_D, relin_packed_D2_label(), C_irr);
-}
-
 RelinPackedScope::RelinPackedScope() {
     if (!dpd_list[RELIN_DPD]) throw PsiException("RELIN: packed DPD instance is not open.", __FILE__, __LINE__);
     dpd_set_default(RELIN_DPD);
@@ -822,6 +809,54 @@ void relin_save_C2(int index, int C_irr) {
 
 void relin_save_S2(int index, int C_irr) {
     relin_pack(relin_work_file(), relin_work_S2_label(), PSIF_EOM_SIjAb, relin_packed_S2_label(index), C_irr);
+}
+
+void relin_open_C2(int index, int C_irr, int *file, const char **label) {
+    static char lbl[32];
+    if (relin_packed_on()) {
+        relin_load_C2(index, C_irr);
+        *file = relin_work_file();
+        *label = relin_work_C2_label();
+        return;
+    }
+    snprintf(lbl, sizeof(lbl), "CMnEf %d", index);
+    *file = PSIF_EOM_CMnEf;
+    *label = lbl;
+}
+
+void relin_open_S2(int index, int C_irr, int *file, const char **label) {
+    static char lbl[32];
+    if (relin_packed_on()) {
+        relin_load_S2(index, C_irr);
+        *file = relin_work_file();
+        *label = relin_work_S2_label();
+        return;
+    }
+    snprintf(lbl, sizeof(lbl), "SIjAb %d", index);
+    *file = PSIF_EOM_SIjAb;
+    *label = lbl;
+}
+
+void relin_put_C2(int index, int C_irr, dpdbuf4 *src) {
+    if (relin_packed_on()) {
+        global_dpd_->buf4_copy(src, relin_work_file(), relin_work_C2_label());
+        relin_save_C2(index, C_irr);
+        return;
+    }
+    char lbl[32];
+    snprintf(lbl, sizeof(lbl), "CMnEf %d", index);
+    global_dpd_->buf4_copy(src, PSIF_EOM_CMnEf, lbl);
+}
+
+void relin_put_S2(int index, int C_irr, dpdbuf4 *src) {
+    if (relin_packed_on()) {
+        global_dpd_->buf4_copy(src, relin_work_file(), relin_work_S2_label());
+        relin_save_S2(index, C_irr);
+        return;
+    }
+    char lbl[32];
+    snprintf(lbl, sizeof(lbl), "SIjAb %d", index);
+    global_dpd_->buf4_copy(src, PSIF_EOM_SIjAb, lbl);
 }
 
 void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {
