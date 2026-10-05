@@ -633,18 +633,20 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->file2_close(&CME);
                         global_dpd_->file2_close(&SIA);
 
-                        {
-                            int c2f, s2f;
-                            const char *c2l, *s2l;
-                            relin_open_C2(i, C_irr, &c2f, &c2l);
-                            relin_open_S2(i, C_irr, &s2f, &s2l);
-                            global_dpd_->buf4_init(&CMnEf, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
-                            global_dpd_->buf4_init(&SIjAb, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
+                        /* The doubles residual is accumulated in the packed space
+                           when the store is packed, and unpacked once after this
+                           loop -- see below. Materialising both vectors here would
+                           cost two full-size transfers per subspace vector. */
+                        if (!relin_packed_on()) {
+                            sprintf(lbl, "%s %d", "CMnEf", i);
+                            global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+                            sprintf(lbl, "%s %d", "SIjAb", i);
+                            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
+                            global_dpd_->buf4_axpbycz(&CMnEf, &SIjAb, &RIjAb, -1.0 * lambda[k] * alpha[i][k],
+                                                      alpha[i][k], 1.0);
+                            global_dpd_->buf4_close(&CMnEf);
+                            global_dpd_->buf4_close(&SIjAb);
                         }
-                        global_dpd_->buf4_axpbycz(&CMnEf, &SIjAb, &RIjAb, -1.0 * lambda[k] * alpha[i][k], alpha[i][k],
-                                                  1.0);
-                        global_dpd_->buf4_close(&CMnEf);
-                        global_dpd_->buf4_close(&SIjAb);
 
                         if (params.full_matrix) {
                             sprintf(lbl, "%s %d", "S0", i);
@@ -742,6 +744,33 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->buf4_close(&Cmnef);
                         global_dpd_->buf4_close(&Sijab);
                     }
+                }
+
+                /* Doubles residual, packed store: every operand is packed and the
+                   operation is elementwise, so accumulating here and unpacking
+                   once yields exactly the vector the full-size accumulation would
+                   have produced -- at one transfer per root instead of two per
+                   subspace vector, which is where the materialising version spent
+                   its time. */
+                if (relin_packed_on()) {
+                    dpdbuf4 Pacc, Pc, Ps;
+                    relin_packed_init(PSIF_EOM_TMP, "RELIN Racc", C_irr);
+                    {
+                        RelinPackedScope scope;
+                        global_dpd_->buf4_init(&Pacc, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN Racc");
+                        for (int i = 0; i < L; ++i) {
+                            global_dpd_->buf4_init(&Pc, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0,
+                                                   relin_packed_C2_label(i));
+                            global_dpd_->buf4_init(&Ps, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0,
+                                                   relin_packed_S2_label(i));
+                            global_dpd_->buf4_axpbycz(&Pc, &Ps, &Pacc, -1.0 * lambda[k] * alpha[i][k], alpha[i][k],
+                                                      1.0);
+                            global_dpd_->buf4_close(&Ps);
+                            global_dpd_->buf4_close(&Pc);
+                        }
+                        global_dpd_->buf4_close(&Pacc);
+                    }
+                    relin_unpack(PSIF_EOM_TMP, "RELIN Racc", PSIF_EOM_R, "RIjAb", C_irr);
                 }
 
 #ifdef EOM_DEBUG
