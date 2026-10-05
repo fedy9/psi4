@@ -34,6 +34,8 @@
 #ifndef _psi_src_bin_cceom_relin_h
 #define _psi_src_bin_cceom_relin_h
 
+#include <vector>
+
 #include "psi4/libdpd/dpd.h"
 
 namespace psi {
@@ -65,6 +67,15 @@ void relin_fold(const char *sigma2_label, const char *out_label, int C_irr);
 
 /* omega used in the fold denominator (mean of the targeted guess energies). */
 double relin_omega_fixed();
+
+/* Post-processing, once the Davidson has converged. For each converged root,
+   rebuild the eliminated amplitudes at that root's OWN converged eigenvalue
+   (not omega_fixed), store the completed vector, and measure it against the
+   real, unfolded EOM-CC2 operator. Two things come out of one extra sigma: a
+   refined Rayleigh-quotient energy, and a residual norm that exposes a vector
+   which is not actually an eigenvector. Must be called before write_Rs, so
+   that the amplitudes handed to CC_RAMPS are the complete ones. */
+void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converged);
 
 }  // namespace cceom
 }  // namespace psi

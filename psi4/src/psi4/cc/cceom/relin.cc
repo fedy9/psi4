@@ -109,6 +109,15 @@
 
 namespace psi {
 namespace cceom {
+void cc2_sigma(int i, int C_irr);
+void init_S1(int index, int irrep);
+void init_S2(int index, int irrep);
+void sort_C(int index, int irrep);
+}
+}  // namespace psi
+
+namespace psi {
+namespace cceom {
 
 namespace {
 
@@ -119,6 +128,8 @@ std::vector<double> f_vir_;    /* bare Fock diagonal, absolute DPD vir index */
 std::vector<char> act_occ_;    /* 1 if this occupied orbital is active */
 std::vector<char> act_vir_;    /* 1 if this virtual orbital is active  */
 double omega_fixed_ = 0.0;     /* folded at this omega (mean of targets)   */
+bool omega_override_on_ = false;  /* relin_finalize folds at a root's own  */
+double omega_override_ = 0.0;     /* converged eigenvalue instead          */
 double omega_screen_ = 0.0;    /* window keyed off this omega (max target) */
 double cutoff_abs_ = 0.0;
 bool init_done_ = false;
@@ -240,10 +251,13 @@ void relin_init(int C_irr) {
         throw PsiException("RELIN: not compatible with LOCAL.", __FILE__, __LINE__);
     if (params.full_matrix)
         throw PsiException("RELIN: not compatible with FULL_MATRIX.", __FILE__, __LINE__);
+    /* relin_finalize now stores completed R2 amplitudes, so this is no longer a
+       question of the vector being incomplete -- but nothing downstream of it
+       (L*R overlaps, densities, properties) has been validated against a
+       reference yet, so refuse rather than return unchecked numbers. */
     if (eom_params.dot_with_L)
-        throw PsiException(
-            "RELIN: stored R2 amplitudes are P-space only, so overlaps with L are not meaningful yet.", __FILE__,
-            __LINE__);
+        throw PsiException("RELIN: overlaps with L have not been validated for relinearized vectors yet.", __FILE__,
+                           __LINE__);
 
     relin_read_bare_fock();
 
@@ -323,6 +337,133 @@ void relin_init(int C_irr) {
     outfile->Printf("\n");
 }
 
+namespace {
+
+/* The bilinear form psi4's RHF cceom uses throughout (see the G build in diag.cc
+   and the norm in schmidt_add.cc):
+       B(X,Y) = 2<X1,Y1> + 2<X2,Y2> - <X2(Ij,bA),Y2>
+   The pqsr sort supplies the second doubles term. */
+double relin_bilinear(dpdfile2 *X1, dpdbuf4 *X2, dpdfile2 *Y1, dpdbuf4 *Y2, int C_irr) {
+    dpdbuf4 X2bA;
+
+    /* DPD's dot routines initialise both operands, so a buffer dotted against
+       itself must use the dedicated self variants. */
+    double val = 2.0 * ((X1 == Y1) ? global_dpd_->file2_dot_self(X1) : global_dpd_->file2_dot(X1, Y1));
+    val += 2.0 * ((X2 == Y2) ? global_dpd_->buf4_dot_self(X2) : global_dpd_->buf4_dot(X2, Y2));
+    global_dpd_->buf4_sort(X2, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN bilinear X2(Ij,bA)");
+    global_dpd_->buf4_init(&X2bA, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN bilinear X2(Ij,bA)");
+    val -= global_dpd_->buf4_dot(&X2bA, Y2);
+    global_dpd_->buf4_close(&X2bA);
+    return val;
+}
+
+}  // namespace
+
+void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converged) {
+    dpdfile2 C1, S1, R1;
+    dpdbuf4 C2, S2, R2, rQ;
+    char C1_lbl[32], C2_lbl[32], S1_lbl[32], S2_lbl[32];
+
+    if (!init_done_) throw PsiException("RELIN: relin_finalize before relin_init.", __FILE__, __LINE__);
+
+    outfile->Printf("\n\tRelinearized EOM-CC2: completing the eigenvectors\n");
+    outfile->Printf("\tEach root's eliminated amplitudes are rebuilt at its own converged\n");
+    outfile->Printf("\teigenvalue and the completed vector is measured against the real,\n");
+    outfile->Printf("\tunfolded operator. Hbar is not Hermitian, so the Rayleigh quotient is\n");
+    outfile->Printf("\ta refined estimate rather than a bound, and the residual norm is a\n");
+    outfile->Printf("\tdiagnostic: a large value means the vector is not an eigenvector.\n");
+    outfile->Printf("\n\tRoot   relin omega      Rayleigh omega       shift    true residual\n");
+
+    for (int i = 0; i < eom_params.cs_per_irrep[C_irr]; ++i) {
+        if (!converged[i]) continue;
+
+        sprintf(C1_lbl, "%s %d", "CME", i);
+        sprintf(C2_lbl, "%s %d", "CMnEf", i);
+        sprintf(S1_lbl, "%s %d", "SIA", i);
+        sprintf(S2_lbl, "%s %d", "SIjAb", i);
+
+        /* (1) Rebuild the eliminated amplitudes at this root's own eigenvalue.
+               Re-running the sigma regenerates the doubles sigma from the
+               converged vector; with the override in place the fold divides by
+               (lambda - D) instead of (omega_fixed - D). */
+        omega_override_on_ = true;
+        omega_override_ = lambda[i];
+        /* cc2_sigma accumulates into the doubles sigma and reads the sorted
+           amplitude buffers, so it needs the same preparation diag.cc performs
+           before every sigma evaluation. */
+        init_S1(i, C_irr);
+        init_S2(i, C_irr);
+        sort_C(i, C_irr);
+        cc2_sigma(i, C_irr);
+        omega_override_on_ = false;
+
+        /* (2) Completed doubles: the explicit part plus the rebuilt part. */
+        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        global_dpd_->buf4_init(&rQ, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN rQ(Ij,Ab)");
+        global_dpd_->buf4_axpy(&rQ, &C2, 1.0);
+        global_dpd_->buf4_close(&rQ);
+        global_dpd_->buf4_close(&C2);
+
+        /* (3) Renormalise the completed vector. */
+        global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
+        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        double nrm = std::sqrt(relin_bilinear(&C1, &C2, &C1, &C2, C_irr));
+        if (nrm > 0.0) {
+            global_dpd_->file2_scm(&C1, 1.0 / nrm);
+            global_dpd_->buf4_scm(&C2, 1.0 / nrm);
+        }
+        global_dpd_->buf4_close(&C2);
+        global_dpd_->file2_close(&C1);
+
+        /* (4) Sigma of the completed vector against the REAL operator: with the
+               full doubles vector present, the ordinary (unfolded) sigma is the
+               true one, so switch the fold off for this one evaluation. */
+        bool saved = eom_params.relin;
+        eom_params.relin = false;
+        /* cc2_sigma accumulates into the doubles sigma and reads the sorted
+           amplitude buffers, so it needs the same preparation diag.cc performs
+           before every sigma evaluation. */
+        init_S1(i, C_irr);
+        init_S2(i, C_irr);
+        sort_C(i, C_irr);
+        cc2_sigma(i, C_irr);
+        eom_params.relin = saved;
+
+        /* (5) Rayleigh quotient and the residual against that operator. */
+        global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
+        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        global_dpd_->file2_init(&S1, PSIF_EOM_SIA, C_irr, 0, 1, S1_lbl);
+        global_dpd_->buf4_init(&S2, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, S2_lbl);
+
+        double num = relin_bilinear(&C1, &C2, &S1, &S2, C_irr);
+        double den = relin_bilinear(&C1, &C2, &C1, &C2, C_irr);
+        double rho = (den != 0.0) ? num / den : 0.0;
+
+        /* residual = S - rho * C, built in scratch so S and C are left intact */
+        global_dpd_->file2_copy(&S1, PSIF_EOM_TMP, "RELIN resid R1");
+        global_dpd_->buf4_copy(&S2, PSIF_EOM_TMP, "RELIN resid R2");
+        global_dpd_->file2_init(&R1, PSIF_EOM_TMP, C_irr, 0, 1, "RELIN resid R1");
+        global_dpd_->buf4_init(&R2, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN resid R2");
+        global_dpd_->file2_axpy(&C1, &R1, -rho, 0);
+        global_dpd_->buf4_axpy(&C2, &R2, -rho);
+        double rnorm = std::sqrt(std::fabs(relin_bilinear(&R1, &R2, &R1, &R2, C_irr)));
+        global_dpd_->buf4_close(&R2);
+        global_dpd_->file2_close(&R1);
+
+        global_dpd_->buf4_close(&S2);
+        global_dpd_->file2_close(&S1);
+        global_dpd_->buf4_close(&C2);
+        global_dpd_->file2_close(&C1);
+
+        outfile->Printf("\t%4d  %14.10lf  %14.10lf  %10.2e  %12.2e\n", i + 1, lambda[i], rho, rho - lambda[i], rnorm);
+
+        /* Hand the refined value back: write_Rs and rzero run next and should
+           see the completed vector together with the energy that belongs to it. */
+        lambda[i] = rho;
+    }
+    outfile->Printf("\n");
+}
+
 void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {
     if (!init_done_) throw PsiException("RELIN: relin_zero before relin_init.", __FILE__, __LINE__);
 
@@ -370,7 +511,8 @@ void relin_fold(const char *sigma2_label, const char *out_label, int C_irr) {
                 if (relin_active(i, j, a, b)) {
                     rQ.matrix[h][ij][ab] = 0.0;
                 } else {
-                    double den = omega_fixed_ - (f_vir_[a] + f_vir_[b] - f_occ_[i] - f_occ_[j]);
+                    double om = omega_override_on_ ? omega_override_ : omega_fixed_;
+                    double den = om - (f_vir_[a] + f_vir_[b] - f_occ_[i] - f_occ_[j]);
                     double aden = std::fabs(den);
                     if (!have_min || aden < min_den) {
                         min_den = aden;
