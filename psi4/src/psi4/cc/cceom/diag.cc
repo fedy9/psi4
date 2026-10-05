@@ -1070,6 +1070,7 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         if (params.overlap) overlap_stash(C_irr);
 
         free_block(alpha_old);
+        if (relin_on()) relin_packed_teardown();
     }  // End Master Loop
 
     // => Save Psivars <=

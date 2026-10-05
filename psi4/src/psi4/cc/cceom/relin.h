@@ -68,6 +68,29 @@ void relin_fold(const char *sigma2_label, const char *out_label, int C_irr);
 /* omega used in the fold denominator (mean of the targeted guess energies). */
 double relin_omega_fixed();
 
+/* ---- packed storage for the explicit doubles (see relin.cc) ---- */
+
+/* Is a packed doubles instance available for this irrep? False when the active
+   space is empty, in which case there are no explicit doubles to store. */
+bool relin_packed_ready();
+
+/* Build / tear down the reduced DPD instance describing the active space. The
+   instance is per irrep, because the active window is. */
+void relin_packed_setup(int C_irr);
+void relin_packed_teardown();
+
+/* Create (and zero) a packed doubles buffer. */
+void relin_packed_init(int packed_file, const char *packed_label, int C_irr);
+
+/* Move amplitudes between a full-size buffer and a packed one. relin_pack
+   gathers the explicit corner; relin_unpack scatters it back and zeroes the
+   eliminated part. */
+void relin_pack(int full_file, const char *full_label, int packed_file, const char *packed_label, int C_irr);
+void relin_unpack(int packed_file, const char *packed_label, int full_file, const char *full_label, int C_irr);
+
+/* Self-test: a P-restricted buffer must survive pack/unpack bit for bit. */
+void relin_packed_check(int C_irr);
+
 /* Post-processing, once the Davidson has converged. For each converged root,
    rebuild the eliminated amplitudes at that root's OWN converged eigenvalue
    (not omega_fixed), store the completed vector, and measure it against the
