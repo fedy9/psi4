@@ -70,6 +70,51 @@ double relin_omega_fixed();
 
 /* ---- packed storage for the explicit doubles (see relin.cc) ---- */
 
+/* Is the packed layout in effect? True only when the user asked for it AND a
+   packed instance exists for this irrep (it does not when the active space is
+   empty, since then there are no explicit doubles to store). Every site that
+   opens a stored doubles vector must agree with this. */
+bool relin_packed_on();
+
+/* Labels under which the Davidson's doubles vectors live when packed. They are
+   deliberately distinct from "CMnEf i" / "SIjAb i": a packed and a full-size
+   buffer cannot share a psio key in the same file, and keeping the conventional
+   labels free means everything downstream (write_Rs, R0, amplitude printing)
+   still finds a full-size vector where it expects one. */
+const char *relin_packed_C2_label(int index);
+const char *relin_packed_S2_label(int index);
+
+/* Full-size working buffers through which packed vectors are read and written
+   by code that operates on whole (ij,ab) blocks -- notably the sigma. Only one
+   vector is ever materialised at a time, so the footprint stays at a couple of
+   full buffers regardless of how many subspace vectors there are. */
+const char *relin_work_C2_label();
+const char *relin_work_S2_label();
+int relin_work_file();
+
+/* packed vector <-> full-size working buffer */
+void relin_load_C2(int index, int C_irr);
+void relin_load_S2(int index, int C_irr);
+void relin_save_C2(int index, int C_irr);
+void relin_save_S2(int index, int C_irr);
+
+/* Pack the Davidson doubles preconditioner so the explicit part can be
+   preconditioned in the packed instance, with the same values the full-size
+   diagonal would have supplied. */
+void relin_pack_diagonal(int C_irr);
+const char *relin_packed_D2_label();
+
+/* Run a block of doubles-only DPD work in the packed instance. Restores the
+   default instance on every exit path, including exceptions. A buf4_init under
+   the wrong instance silently gets wrong offsets, so this is never to be
+   replaced by bare dpd_set_default calls. */
+struct RelinPackedScope {
+    RelinPackedScope();
+    ~RelinPackedScope();
+    RelinPackedScope(const RelinPackedScope &) = delete;
+    RelinPackedScope &operator=(const RelinPackedScope &) = delete;
+};
+
 /* Is a packed doubles instance available for this irrep? False when the active
    space is empty, in which case there are no explicit doubles to store. */
 bool relin_packed_ready();

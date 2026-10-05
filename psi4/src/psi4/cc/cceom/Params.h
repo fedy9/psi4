@@ -92,6 +92,7 @@ struct Eom_params {
     double relin_cutoff;
     double relin_omega_fixed;
     bool relin_omega_given;
+    bool relin_packed;
 
     /* compute overlap of normalized R with L (must run cclambda first) */
     int dot_with_L;

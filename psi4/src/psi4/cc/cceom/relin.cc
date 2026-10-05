@@ -91,6 +91,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 #include "psi4/psi4-dec.h"
@@ -336,8 +337,15 @@ void relin_init(int C_irr) {
     outfile->Printf("\tmax bare Fock off-diagonal  = %5.1e\n", fock_offdiag_max_);
 
     relin_partition_check(C_irr);
+    if (eom_params.relin_packed)
+        throw PsiException(
+            "RELIN_PACKED is not complete yet: the Davidson subspace algebra (G build, residual, schmidt_add, "
+            "restart) still reads full-size doubles vectors. Leave it off.",
+            __FILE__, __LINE__);
+
     relin_packed_setup(C_irr);
     relin_packed_check(C_irr);
+    if (relin_packed_on()) relin_pack_diagonal(C_irr);
     outfile->Printf("\n");
 
 }
@@ -623,7 +631,8 @@ void relin_packed_setup(int C_irr) {
 
     packed_ready_ = true;
 
-    outfile->Printf("\tpacked doubles storage      = active occ");
+    outfile->Printf("\tpacked doubles storage      = %s, active occ",
+                    eom_params.relin_packed ? "ON" : "available (RELIN_PACKED off)");
     for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", act_occpi_[h]);
     outfile->Printf(" / vir");
     for (int h = 0; h < moinfo.nirreps; h++) outfile->Printf(" %d", act_virtpi_[h]);
@@ -760,6 +769,59 @@ void relin_packed_check(int C_irr) {
     outfile->Printf("\tpacked round-trip check     = %5.1e (must be 0)\n", maxdev);
     if (maxdev > 0.0)
         throw PsiException("RELIN: packed/unpacked amplitudes do not round trip exactly.", __FILE__, __LINE__);
+}
+
+bool relin_packed_on() { return eom_params.relin_packed && packed_ready_; }
+
+const char *relin_packed_C2_label(int index) {
+    static char lbl[32];
+    snprintf(lbl, sizeof(lbl), "RELIN C2 %d", index);
+    return lbl;
+}
+
+const char *relin_packed_S2_label(int index) {
+    static char lbl[32];
+    snprintf(lbl, sizeof(lbl), "RELIN S2 %d", index);
+    return lbl;
+}
+
+const char *relin_packed_D2_label() { return "RELIN DIjAb packed"; }
+
+void relin_pack_diagonal(int C_irr) {
+    if (!packed_ready_) return;
+    /* The eliminated part of the diagonal is never used once the subspace is
+       packed, so gathering the explicit corner loses nothing -- and taking the
+       values from the existing full-size diagonal keeps the packed path
+       numerically identical to the masked one. */
+    relin_packed_init(PSIF_EOM_D, relin_packed_D2_label(), C_irr);
+    relin_pack(PSIF_EOM_D, "DIjAb", PSIF_EOM_D, relin_packed_D2_label(), C_irr);
+}
+
+RelinPackedScope::RelinPackedScope() {
+    if (!dpd_list[RELIN_DPD]) throw PsiException("RELIN: packed DPD instance is not open.", __FILE__, __LINE__);
+    dpd_set_default(RELIN_DPD);
+}
+
+RelinPackedScope::~RelinPackedScope() { dpd_set_default(0); }
+
+const char *relin_work_C2_label() { return "RELIN C2 work"; }
+const char *relin_work_S2_label() { return "RELIN S2 work"; }
+int relin_work_file() { return PSIF_EOM_TMP; }
+
+void relin_load_C2(int index, int C_irr) {
+    relin_unpack(PSIF_EOM_CMnEf, relin_packed_C2_label(index), relin_work_file(), relin_work_C2_label(), C_irr);
+}
+
+void relin_load_S2(int index, int C_irr) {
+    relin_unpack(PSIF_EOM_SIjAb, relin_packed_S2_label(index), relin_work_file(), relin_work_S2_label(), C_irr);
+}
+
+void relin_save_C2(int index, int C_irr) {
+    relin_pack(relin_work_file(), relin_work_C2_label(), PSIF_EOM_CMnEf, relin_packed_C2_label(index), C_irr);
+}
+
+void relin_save_S2(int index, int C_irr) {
+    relin_pack(relin_work_file(), relin_work_S2_label(), PSIF_EOM_SIjAb, relin_packed_S2_label(index), C_irr);
 }
 
 void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {

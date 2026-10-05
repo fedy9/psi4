@@ -2302,6 +2302,12 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         elimination exact for that root, which is how the implementation is
         verified. -*/
         options.add_double("RELIN_OMEGA_FIXED", 0.0);
+        /*- Hold the explicit doubles of a !RELIN! computation in a buffer
+        dimensioned by the active space instead of the full one, shrinking both the
+        Davidson subspace storage and the cost of the dot products over it by the
+        active fraction. Converged energies are unaffected; this is a change of
+        storage layout only. !expert -*/
+        options.add_bool("RELIN_PACKED", false);
         /*- Complex tolerance applied in CCEOM computations -*/
         options.add_double("COMPLEX_TOLERANCE", 1E-12);
         /*- Convergence criterion for norm of the residual vector in the Davidson algorithm for CC-EOM. -*/
