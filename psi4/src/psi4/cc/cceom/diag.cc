@@ -52,7 +52,9 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
 #include "psi4/psi4-dec.h"
+#include "psi4/libpsi4util/exception.h"
 
 namespace psi {
 namespace cceom {
@@ -202,6 +204,8 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         /* Store approximate diagonal elements of Hbar */
         form_diagonal(C_irr);
 
+        ss_evals.clear(); /* refilled by diagSS below, if it runs */
+
         if (!eom_params.restart_eom_cc3) {
             if (params.local) {
                 if (eom_params.guess == "DISK") { /* only do this if we don't already have guesses on disk */
@@ -287,6 +291,14 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         }
 
 #endif
+
+        if (eom_params.relin && params.wfn != "EOM_CC2")
+            throw PsiException("RELIN is only implemented for WFN = EOM_CC2.", __FILE__, __LINE__);
+
+        /* Build the relinearized-EOM-CC2 active space and omega_fixed. Must come
+           after diagSS (whose CIS eigenvalues set omega_fixed) and before the
+           first sigma evaluation of this irrep. */
+        if (relin_on()) relin_init(C_irr);
 
         /* Setup and zero initial C2 and S2 vector to go with Hbar_SS */
         for (int i = 0; i < eom_params.cs_per_irrep[C_irr]; ++i) {
@@ -761,6 +773,9 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         precondition_RHF(&RIA, &RIjAb, lambda[k]);
                     else
                         precondition(&RIA, &Ria, &RIJAB, &Rijab, &RIjAb, lambda[k]);
+
+                    /* Keep new subspace vectors inside the explicit space. */
+                    if (relin_on()) relin_zero(&RIjAb, false, C_irr);
 
                     if (params.eom_ref == 0) {
                         /* Normalize R */

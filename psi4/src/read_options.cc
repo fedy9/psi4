@@ -2284,6 +2284,24 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         CC3 computations and after the initial solution of EOM CCSD.
         May help efficiency, but hazardous when solving for higher roots. -*/
         options.add_bool("COLLAPSE_WITH_LAST_CC3", false);
+        /*- Do fold ("relinearize") the inactive part of the doubles space in an
+        EOM-CC2 computation, leaving only the singles plus an active corner of the
+        doubles as explicit unknowns? The eliminated amplitudes are reconstructed
+        analytically at a fixed omega, which is exact when that omega equals the
+        true eigenvalue. EOM_CC2 with an RHF reference only. -*/
+        options.add_bool("RELIN", false);
+        /*- Active-space cutoff for !RELIN!, in hartree. An orbital is active if its
+        smallest single-excitation gap lies within this distance above
+        max(omega_fixed, highest targeted guess energy); the explicit doubles are
+        those with all four indices active. Larger means more explicit
+        amplitudes, and the full space in the limit. -*/
+        options.add_double("RELIN_CUTOFF", 1.0);
+        /*- The omega at which !RELIN! reconstructs the eliminated doubles. If not
+        given, the mean of the targeted roots' CIS guess energies in each irrep is
+        used. Setting it to a converged EOM-CC2 excitation energy makes the
+        elimination exact for that root, which is how the implementation is
+        verified. -*/
+        options.add_double("RELIN_OMEGA_FIXED", 0.0);
         /*- Complex tolerance applied in CCEOM computations -*/
         options.add_double("COMPLEX_TOLERANCE", 1E-12);
         /*- Convergence criterion for norm of the residual vector in the Davidson algorithm for CC-EOM. -*/

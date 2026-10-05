@@ -45,6 +45,7 @@ struct Params params;
 struct Eom_params eom_params;
 struct Local local;
 int ***dpd_dp;
+std::vector<double> ss_evals;
 
 }
 }  // namespace psi

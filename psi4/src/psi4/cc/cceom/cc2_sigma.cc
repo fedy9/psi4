@@ -31,6 +31,7 @@
     \brief Enter brief description of file here
 */
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <cmath>
 #include "psi4/libqt/qt.h"
@@ -38,6 +39,7 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
 
 namespace psi {
 namespace cceom {
@@ -65,86 +67,17 @@ void cc2_sigma(int i, int C_irr) {
     char SIjAb_lbl[32];
     int Gej, Gab, Gij, Gj, Gi, Ge, nrows, length, E, e, I;
     int Gam, Gef, Gim, Ga, Gm, ncols, A, a, am;
+    /* which buffer the singles-from-doubles terms read: the stored C2, or
+       C2^P + C2^Q when the inactive doubles are folded (see relin.cc) */
+    int c2_file = PSIF_EOM_CMnEf;
+    char c2_lbl[32];
+    const char *c2_adapt_lbl = "2CMnEf - CMnfE";
 
     if (params.eom_ref == 0) { /* RHF */
 
         cc2_sigmaSS(i, C_irr);
 
-        sprintf(lbl, "%s %d", "SIA", i);
-        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
-        global_dpd_->file2_init(&FME, PSIF_CC_OEI, H_IRR, 0, 1, "FME");
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "2CMnEf - CMnfE");
-        global_dpd_->dot24(&FME, &CMnEf, &SIA, 0, 0, 1.0, 1.0);
-        global_dpd_->buf4_close(&CMnEf);
-        global_dpd_->file2_close(&FME);
-        global_dpd_->file2_close(&SIA);
-
-        /*
-        sprintf(lbl, "%s %d", "SIA", i);
-        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
-        sprintf(lbl, "%s %d", "CMnEf", i);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
-        global_dpd_->buf4_init(&WAmEf, CC_HBAR, H_IRR, 11, 5, 11, 5, 0, "WAmEf 2(Am,Ef) - (Am,fE)");
-        dpd_contract442(&CMnEf, &WAmEf, &SIA, 0, 0, 1.0, 1.0);
-        global_dpd_->buf4_close(&WAmEf);
-        global_dpd_->buf4_close(&CMnEf);
-        global_dpd_->file2_close(&SIA);
-        */
-
-        global_dpd_->buf4_init(&C, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "2CMnEf - CMnfE");
-        global_dpd_->buf4_init(&W, PSIF_CC_HBAR, H_IRR, 11, 5, 11, 5, 0, "WAmEf");
-        sprintf(lbl, "%s %d", "SIA", i);
-        global_dpd_->file2_init(&S, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
-        global_dpd_->file2_mat_init(&S);
-        global_dpd_->file2_mat_rd(&S);
-        for (Gam = 0; Gam < moinfo.nirreps; Gam++) {
-            Gef = Gam ^ H_IRR;
-            Gim = Gef ^ C_irr;
-
-            global_dpd_->buf4_mat_irrep_init(&C, Gim);
-            global_dpd_->buf4_mat_irrep_rd(&C, Gim);
-            global_dpd_->buf4_mat_irrep_shift13(&C, Gim);
-
-            for (Gi = 0; Gi < moinfo.nirreps; Gi++) {
-                Ga = Gi ^ C_irr;
-                Gm = Ga ^ Gam;
-
-                W.matrix[Gam] = global_dpd_->dpd_block_matrix(moinfo.occpi[Gm], W.params->coltot[Gef]);
-
-                nrows = moinfo.occpi[Gi];
-                ncols = moinfo.occpi[Gm] * W.params->coltot[Gef];
-
-                for (A = 0; A < moinfo.virtpi[Ga]; A++) {
-                    a = moinfo.vir_off[Ga] + A;
-                    am = W.row_offset[Gam][a];
-
-                    global_dpd_->buf4_mat_irrep_rd_block(&W, Gam, am, moinfo.occpi[Gm]);
-
-                    if (nrows && ncols && moinfo.virtpi[Ga])
-                        C_DGEMV('n', nrows, ncols, 1, C.shift.matrix[Gim][Gi][0], ncols, W.matrix[Gam][0], 1, 1,
-                                &(S.matrix[Gi][0][A]), moinfo.virtpi[Ga]);
-                }
-
-                global_dpd_->free_dpd_block(W.matrix[Gam], moinfo.occpi[Gm], W.params->coltot[Gef]);
-            }
-
-            global_dpd_->buf4_mat_irrep_close(&C, Gim);
-        }
-        global_dpd_->file2_mat_wrt(&S);
-        global_dpd_->file2_mat_close(&S);
-        global_dpd_->file2_close(&S);
-        global_dpd_->buf4_close(&C);
-        global_dpd_->buf4_close(&W);
-
-        sprintf(lbl, "%s %d", "SIA", i);
-        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
-        sprintf(lbl, "%s %d", "CMnEf", i);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
-        global_dpd_->buf4_init(&WMnIe, PSIF_CC_HBAR, H_IRR, 0, 11, 0, 11, 0, "WMnIe - 2WnMIe (Mn,eI)");
-        global_dpd_->contract442(&WMnIe, &CMnEf, &SIA, 3, 3, 1.0, 1.0);
-        global_dpd_->buf4_close(&CMnEf);
-        global_dpd_->buf4_close(&WMnIe);
-        global_dpd_->file2_close(&SIA);
+        sprintf(c2_lbl, "%s %d", "CMnEf", i);
 
         sprintf(CME_lbl, "%s %d", "CME", i);
         sprintf(SIjAb_lbl, "%s %d", "SIjAb", i);
@@ -260,6 +193,132 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_axpy(&Z, &SIjAb, -1.0);
         global_dpd_->buf4_close(&Z);
         global_dpd_->buf4_close(&SIjAb);
+
+        /* ---- Relinearized EOM-CC2: fold the eliminated (Q-space) doubles ----
+           SIjAb now holds A_DS C1 + D C2^P, where C2 is zero outside the active
+           corner. Because the doubles self-coupling D is the bare, diagonal
+           Fock operator, the Q part of that sigma is exactly the Q-space
+           numerator A_DS^Q C1, so dividing it by (omega_fixed - D) yields the
+           eliminated amplitudes without any extra contraction. See relin.cc.
+
+           The singles-from-doubles terms that follow are then evaluated once on
+           C2^P + C2^Q, which is what the P-space equation calls for. */
+        if (relin_on()) {
+            dpdbuf4 Ctot, Ctmp;
+
+            relin_fold(SIjAb_lbl, "RELIN rQ(Ij,Ab)", C_irr);
+
+            global_dpd_->buf4_init(&Ctot, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, c2_lbl);
+            global_dpd_->buf4_copy(&Ctot, PSIF_EOM_TMP, "RELIN Ctot(Ij,Ab)");
+            global_dpd_->buf4_close(&Ctot);
+
+            global_dpd_->buf4_init(&Ctot, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN Ctot(Ij,Ab)");
+            global_dpd_->buf4_init(&Ctmp, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN rQ(Ij,Ab)");
+            global_dpd_->buf4_axpy(&Ctmp, &Ctot, 1.0);
+            global_dpd_->buf4_close(&Ctmp);
+
+            /* 2 C(Ij,Ab) - C(Ij,bA), the same spin-adapted combination sort_C
+               forms for the ordinary doubles vector */
+            global_dpd_->buf4_sort(&Ctot, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN Ctot(Ij,bA)");
+            global_dpd_->buf4_copy(&Ctot, PSIF_EOM_TMP, "RELIN 2Ctot - CtotbA");
+            global_dpd_->buf4_close(&Ctot);
+
+            global_dpd_->buf4_init(&Ctot, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN 2Ctot - CtotbA");
+            global_dpd_->buf4_scm(&Ctot, 2.0);
+            global_dpd_->buf4_init(&Ctmp, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN Ctot(Ij,bA)");
+            global_dpd_->buf4_axpy(&Ctmp, &Ctot, -1.0);
+            global_dpd_->buf4_close(&Ctmp);
+            global_dpd_->buf4_close(&Ctot);
+
+            c2_file = PSIF_EOM_TMP;
+            strcpy(c2_lbl, "RELIN Ctot(Ij,Ab)");
+            c2_adapt_lbl = "RELIN 2Ctot - CtotbA";
+        }
+        sprintf(lbl, "%s %d", "SIA", i);
+        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
+        global_dpd_->file2_init(&FME, PSIF_CC_OEI, H_IRR, 0, 1, "FME");
+        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, c2_adapt_lbl);
+        global_dpd_->dot24(&FME, &CMnEf, &SIA, 0, 0, 1.0, 1.0);
+        global_dpd_->buf4_close(&CMnEf);
+        global_dpd_->file2_close(&FME);
+        global_dpd_->file2_close(&SIA);
+
+        /*
+        sprintf(lbl, "%s %d", "SIA", i);
+        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
+        sprintf(lbl, "%s %d", "CMnEf", i);
+        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+        global_dpd_->buf4_init(&WAmEf, CC_HBAR, H_IRR, 11, 5, 11, 5, 0, "WAmEf 2(Am,Ef) - (Am,fE)");
+        dpd_contract442(&CMnEf, &WAmEf, &SIA, 0, 0, 1.0, 1.0);
+        global_dpd_->buf4_close(&WAmEf);
+        global_dpd_->buf4_close(&CMnEf);
+        global_dpd_->file2_close(&SIA);
+        */
+
+        global_dpd_->buf4_init(&C, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, c2_adapt_lbl);
+        global_dpd_->buf4_init(&W, PSIF_CC_HBAR, H_IRR, 11, 5, 11, 5, 0, "WAmEf");
+        sprintf(lbl, "%s %d", "SIA", i);
+        global_dpd_->file2_init(&S, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
+        global_dpd_->file2_mat_init(&S);
+        global_dpd_->file2_mat_rd(&S);
+        for (Gam = 0; Gam < moinfo.nirreps; Gam++) {
+            Gef = Gam ^ H_IRR;
+            Gim = Gef ^ C_irr;
+
+            global_dpd_->buf4_mat_irrep_init(&C, Gim);
+            global_dpd_->buf4_mat_irrep_rd(&C, Gim);
+            global_dpd_->buf4_mat_irrep_shift13(&C, Gim);
+
+            for (Gi = 0; Gi < moinfo.nirreps; Gi++) {
+                Ga = Gi ^ C_irr;
+                Gm = Ga ^ Gam;
+
+                W.matrix[Gam] = global_dpd_->dpd_block_matrix(moinfo.occpi[Gm], W.params->coltot[Gef]);
+
+                nrows = moinfo.occpi[Gi];
+                ncols = moinfo.occpi[Gm] * W.params->coltot[Gef];
+
+                for (A = 0; A < moinfo.virtpi[Ga]; A++) {
+                    a = moinfo.vir_off[Ga] + A;
+                    am = W.row_offset[Gam][a];
+
+                    global_dpd_->buf4_mat_irrep_rd_block(&W, Gam, am, moinfo.occpi[Gm]);
+
+                    if (nrows && ncols && moinfo.virtpi[Ga])
+                        C_DGEMV('n', nrows, ncols, 1, C.shift.matrix[Gim][Gi][0], ncols, W.matrix[Gam][0], 1, 1,
+                                &(S.matrix[Gi][0][A]), moinfo.virtpi[Ga]);
+                }
+
+                global_dpd_->free_dpd_block(W.matrix[Gam], moinfo.occpi[Gm], W.params->coltot[Gef]);
+            }
+
+            global_dpd_->buf4_mat_irrep_close(&C, Gim);
+        }
+        global_dpd_->file2_mat_wrt(&S);
+        global_dpd_->file2_mat_close(&S);
+        global_dpd_->file2_close(&S);
+        global_dpd_->buf4_close(&C);
+        global_dpd_->buf4_close(&W);
+
+        sprintf(lbl, "%s %d", "SIA", i);
+        global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
+        global_dpd_->buf4_init(&CMnEf, c2_file, C_irr, 0, 5, 0, 5, 0, c2_lbl);
+        global_dpd_->buf4_init(&WMnIe, PSIF_CC_HBAR, H_IRR, 0, 11, 0, 11, 0, "WMnIe - 2WnMIe (Mn,eI)");
+        global_dpd_->contract442(&WMnIe, &CMnEf, &SIA, 3, 3, 1.0, 1.0);
+        global_dpd_->buf4_close(&CMnEf);
+        global_dpd_->buf4_close(&WMnIe);
+        global_dpd_->file2_close(&SIA);
+
+        /* Restrict the stored doubles sigma to the explicit (P) space. The
+           eliminated amplitudes are not stored, and their equation was already
+           accounted for by the fold above. This uses the exact complement of
+           the mask relin_fold applied, via the same predicate. */
+        if (relin_on()) {
+            dpdbuf4 S2P;
+            global_dpd_->buf4_init(&S2P, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+            relin_zero(&S2P, false, C_irr);
+            global_dpd_->buf4_close(&S2P);
+        }
     } else if (params.eom_ref == 1) { /* ROHF */
         throw std::logic_error("ROHF EOM_CC2 is not currently implemented\n");
     } else { /* UHF */
