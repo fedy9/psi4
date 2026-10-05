@@ -72,12 +72,33 @@ void cc2_sigma(int i, int C_irr) {
     int c2_file = PSIF_EOM_CMnEf;
     char c2_lbl[32];
     const char *c2_adapt_lbl = "2CMnEf - CMnfE";
+    /* where the stored doubles vector is read from and the doubles sigma is
+       accumulated: the vectors themselves when stored full size, or full-size
+       working buffers when the store is packed (see relin.cc) */
+    int c2_src_file;
+    const char *c2_src_lbl;
+    int s2_file;
+    char s2_lbl[32];
 
     if (params.eom_ref == 0) { /* RHF */
 
         cc2_sigmaSS(i, C_irr);
 
-        sprintf(c2_lbl, "%s %d", "CMnEf", i);
+        relin_open_C2(i, C_irr, &c2_src_file, &c2_src_lbl);
+        c2_file = c2_src_file;
+        snprintf(c2_lbl, sizeof(c2_lbl), "%s", c2_src_lbl);
+
+        s2_file = PSIF_EOM_SIjAb;
+        sprintf(s2_lbl, "%s %d", "SIjAb", i);
+        if (relin_packed_on()) {
+            /* accumulate into a full-size working buffer, then pack it */
+            dpdbuf4 S2w;
+            s2_file = relin_work_file();
+            snprintf(s2_lbl, sizeof(s2_lbl), "%s", relin_work_S2_label());
+            global_dpd_->buf4_init(&S2w, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
+            global_dpd_->buf4_scm(&S2w, 0.0);
+            global_dpd_->buf4_close(&S2w);
+        }
 
         sprintf(CME_lbl, "%s %d", "CME", i);
         sprintf(SIjAb_lbl, "%s %d", "SIjAb", i);
@@ -89,7 +110,7 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->file2_close(&CME);
         global_dpd_->buf4_close(&WMbIj);
         global_dpd_->buf4_sort(&Z, PSIF_EOM_TMP, qpsr, 0, 5, "WmaijDS Z(jI,bA)");
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+        global_dpd_->buf4_init(&SIjAb, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
         global_dpd_->buf4_axpy(&Z, &SIjAb, -1.0);
         global_dpd_->buf4_close(&Z);
         global_dpd_->buf4_init(&Z, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "WmaijDS Z(jI,bA)");
@@ -144,7 +165,7 @@ void cc2_sigma(int i, int C_irr) {
 
         /*
         global_dpd_->buf4_sort(&Z, PSIF_EOM_TMP, qpsr, 0, 5, "WabejDS Z(jI,bA)");
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+        global_dpd_->buf4_init(&SIjAb, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
         global_dpd_->buf4_axpy(&Z, &SIjAb, 1.0);
         global_dpd_->buf4_close(&Z);
         global_dpd_->buf4_init(&Z, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "WabejDS Z(jI,bA)");
@@ -153,8 +174,8 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_close(&SIjAb);
         */
 
-        global_dpd_->buf4_sort_axpy(&Z, PSIF_EOM_SIjAb, qpsr, 0, 5, SIjAb_lbl, 1);
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+        global_dpd_->buf4_sort_axpy(&Z, s2_file, qpsr, 0, 5, s2_lbl, 1);
+        global_dpd_->buf4_init(&SIjAb, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
         global_dpd_->buf4_axpy(&Z, &SIjAb, 1.0);
         global_dpd_->buf4_close(&SIjAb);
         global_dpd_->buf4_close(&Z);
@@ -163,7 +184,7 @@ void cc2_sigma(int i, int C_irr) {
         sprintf(SIjAb_lbl, "%s %d", "SIjAb", i);
 
         global_dpd_->buf4_init(&Z, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "FDD_Fbe Z(Ij,Ab)");
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, CMnEf_lbl);
+        global_dpd_->buf4_init(&CMnEf, c2_src_file, C_irr, 0, 5, 0, 5, 0, c2_src_lbl);
         global_dpd_->file2_init(&FAE, PSIF_CC_OEI, H_IRR, 1, 1, "fAB");
         global_dpd_->contract424(&CMnEf, &FAE, &Z, 3, 1, 0, 1.0, 0.0);
         global_dpd_->file2_close(&FAE);
@@ -172,7 +193,7 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_sort(&Z, PSIF_EOM_TMP, qpsr, 0, 5, "FDD_Fbe Z(jI,bA)");
         global_dpd_->buf4_init(&Z2, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "FDD_Fbe Z(jI,bA)");
 
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+        global_dpd_->buf4_init(&SIjAb, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
         global_dpd_->buf4_axpy(&Z, &SIjAb, 1.0);
         global_dpd_->buf4_axpy(&Z2, &SIjAb, 1.0);
         global_dpd_->buf4_close(&Z);
@@ -180,13 +201,13 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_close(&SIjAb);
 
         global_dpd_->buf4_init(&Z, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "FDD_Fmj Z(Ij,Ab)");
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, CMnEf_lbl);
+        global_dpd_->buf4_init(&CMnEf, c2_src_file, C_irr, 0, 5, 0, 5, 0, c2_src_lbl);
         global_dpd_->file2_init(&FMI, PSIF_CC_OEI, H_IRR, 0, 0, "fIJ");
         global_dpd_->contract244(&FMI, &CMnEf, &Z, 0, 0, 0, 1.0, 0.0);
         global_dpd_->file2_close(&FMI);
         global_dpd_->buf4_close(&CMnEf);
         global_dpd_->buf4_sort(&Z, PSIF_EOM_TMP, qpsr, 0, 5, "FDD_Fmj Z(jI,bA)");
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+        global_dpd_->buf4_init(&SIjAb, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
         global_dpd_->buf4_axpy(&Z, &SIjAb, -1.0);
         global_dpd_->buf4_close(&Z);
         global_dpd_->buf4_init(&Z, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "FDD_Fmj Z(jI,bA)");
@@ -206,9 +227,9 @@ void cc2_sigma(int i, int C_irr) {
         if (relin_on()) {
             dpdbuf4 Ctot, Ctmp;
 
-            relin_fold(SIjAb_lbl, "RELIN rQ(Ij,Ab)", C_irr);
+            relin_fold(s2_file, s2_lbl, "RELIN rQ(Ij,Ab)", C_irr);
 
-            global_dpd_->buf4_init(&Ctot, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, c2_lbl);
+            global_dpd_->buf4_init(&Ctot, c2_src_file, C_irr, 0, 5, 0, 5, 0, c2_src_lbl);
             global_dpd_->buf4_copy(&Ctot, PSIF_EOM_TMP, "RELIN Ctot(Ij,Ab)");
             global_dpd_->buf4_close(&Ctot);
 
@@ -315,9 +336,10 @@ void cc2_sigma(int i, int C_irr) {
            the mask relin_fold applied, via the same predicate. */
         if (relin_on()) {
             dpdbuf4 S2P;
-            global_dpd_->buf4_init(&S2P, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, SIjAb_lbl);
+            global_dpd_->buf4_init(&S2P, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);
             relin_zero(&S2P, false, C_irr);
             global_dpd_->buf4_close(&S2P);
+            if (relin_packed_on()) relin_save_S2(i, C_irr);
         }
     } else if (params.eom_ref == 1) { /* ROHF */
         throw std::logic_error("ROHF EOM_CC2 is not currently implemented\n");

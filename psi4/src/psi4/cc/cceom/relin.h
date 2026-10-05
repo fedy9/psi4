@@ -63,7 +63,7 @@ void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr);
    sigma2_label in PSIF_EOM_SIjAb, restrict it to Q, divide by
    (omega_fixed - D_bare), and leave the result in PSIF_EOM_TMP under
    out_label. Valid ONLY if the C2 that produced that sigma was zero on Q. */
-void relin_fold(const char *sigma2_label, const char *out_label, int C_irr);
+void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label, int C_irr);
 
 /* omega used in the fold denominator (mean of the targeted guess energies). */
 double relin_omega_fixed();
@@ -90,6 +90,10 @@ const char *relin_packed_S2_label(int index);
    full buffers regardless of how many subspace vectors there are. */
 const char *relin_work_C2_label();
 const char *relin_work_S2_label();
+/* A third full-size scratch, for code that accumulates into a vector while
+   reading others: the accumulation target cannot share a working buffer with
+   the sources it is summing. */
+const char *relin_acc_label();
 int relin_work_file();
 
 /* Uniform accessors for the Davidson's stored doubles vectors. These are the
@@ -107,6 +111,14 @@ void relin_open_S2(int index, int C_irr, int *file, const char **label);
 /* Write a doubles vector back into the store, packing it when packed. */
 void relin_put_C2(int index, int C_irr, dpdbuf4 *src);
 void relin_put_S2(int index, int C_irr, dpdbuf4 *src);
+
+/* Pin the working buffers: while held, the accessors hand back the working
+   buffers without reloading them, and the store-back calls do nothing. This is
+   for the one place that needs it -- completing an eigenvector, whose whole
+   point is amplitudes OUTSIDE the active corner. Routing such a vector through
+   the packed store would silently discard exactly the completion that was just
+   computed, and the sigma taken against it likewise. */
+void relin_work_hold(bool on);
 
 /* packed vector <-> full-size working buffer */
 void relin_load_C2(int index, int C_irr);

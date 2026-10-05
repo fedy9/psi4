@@ -43,3 +43,16 @@ for cutoff in [0.05, 1.0, 50.0]:
     energy('eom-cc2')
     omega = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega_ref, omega, 7, f"RELIN excitation energy, cutoff {cutoff}")      #TEST
+
+    # Packing the explicit doubles into a buffer dimensioned by the active space
+    # is a change of storage layout only, so it must reproduce the unpacked run
+    # exactly, not merely to the comparison threshold.
+    clean()
+    set_options({'cceom__relin': True,
+                 'cceom__relin_cutoff': cutoff,
+                 'cceom__relin_omega_fixed': omega_ref,
+                 'cceom__relin_packed': True})
+    energy('eom-cc2')
+    omega_packed = variable(f'CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
+    compare_values(omega, omega_packed, 12, f"RELIN packed == unpacked, cutoff {cutoff}")  #TEST
+    set_options({'cceom__relin_packed': False})

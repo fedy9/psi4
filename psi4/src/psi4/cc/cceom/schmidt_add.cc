@@ -37,6 +37,7 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
 
 namespace psi {
 namespace cceom {
@@ -147,7 +148,12 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
         sprintf(CME_lbl, "%s %d", "CME", i);
         sprintf(CMnEf_lbl, "%s %d", "CMnEf", i);
         global_dpd_->file2_init(&CME, PSIF_EOM_CME, irrep, 0, 1, CME_lbl);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, irrep, 0, 5, 0, 5, 0, CMnEf_lbl);
+        {
+            int c2f;
+            const char *c2l;
+            relin_open_C2(i, irrep, &c2f, &c2l);
+            global_dpd_->buf4_init(&CMnEf, c2f, irrep, 0, 5, 0, 5, 0, c2l);
+        }
         dotval = 2.0 * global_dpd_->file2_dot(RIA, &CME);
         // outfile->Printf( "OE Dotval for vector %d = %20.14f\n", i, dotval);
         dotval += global_dpd_->buf4_dot(&R2a, &CMnEf);
@@ -203,7 +209,7 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
         sprintf(CMnEf_lbl, "%s %d", "CMnEf", *numCs);
 
         global_dpd_->file2_copy(RIA, PSIF_EOM_CME, CME_lbl);
-        global_dpd_->buf4_copy(RIjAb, PSIF_EOM_CMnEf, CMnEf_lbl);
+        relin_put_C2(*numCs, irrep, RIjAb);
 
         /* Generate AA and BB C2 vectors from AB vector */
         /* C(IJ,AB) = C(ij,ab) = C(Ij,Ab) - C(Ij,bA) */

@@ -633,10 +633,14 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->file2_close(&CME);
                         global_dpd_->file2_close(&SIA);
 
-                        sprintf(lbl, "%s %d", "CMnEf", i);
-                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
-                        sprintf(lbl, "%s %d", "SIjAb", i);
-                        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
+                        {
+                            int c2f, s2f;
+                            const char *c2l, *s2l;
+                            relin_open_C2(i, C_irr, &c2f, &c2l);
+                            relin_open_S2(i, C_irr, &s2f, &s2l);
+                            global_dpd_->buf4_init(&CMnEf, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
+                            global_dpd_->buf4_init(&SIjAb, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
+                        }
                         global_dpd_->buf4_axpbycz(&CMnEf, &SIjAb, &RIjAb, -1.0 * lambda[k] * alpha[i][k], alpha[i][k],
                                                   1.0);
                         global_dpd_->buf4_close(&CMnEf);
@@ -1218,6 +1222,10 @@ void init_C2(int i, int C_irr) {
     dpdbuf4 CMNEF, Cmnef, CMnEf;
     char lbl[32];
     if (params.eom_ref == 0) {
+        if (relin_packed_on()) {
+            relin_packed_init(PSIF_EOM_CMnEf, relin_packed_C2_label(i), C_irr);
+            return;
+        }
         sprintf(lbl, "%s %d", "CMnEf", i);
         global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
         global_dpd_->buf4_scm(&CMnEf, 0.0);
@@ -1253,6 +1261,10 @@ void init_S2(int i, int C_irr) {
     dpdbuf4 SIJAB, Sijab, SIjAb;
     char lbl[32];
     if (params.eom_ref == 0) {
+        if (relin_packed_on()) {
+            relin_packed_init(PSIF_EOM_SIjAb, relin_packed_S2_label(i), C_irr);
+            return;
+        }
         sprintf(lbl, "%s %d", "SIjAb", i);
         global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
         global_dpd_->buf4_scm(&SIjAb, 0.0);

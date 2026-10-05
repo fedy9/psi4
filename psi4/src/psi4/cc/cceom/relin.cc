@@ -137,6 +137,7 @@ double omega_screen_ = 0.0;    /* window keyed off this omega (max target) */
 double cutoff_abs_ = 0.0;
 bool init_done_ = false;
 bool warned_small_denom_ = false;
+bool work_hold_ = false;
 
 /* Largest off-diagonal element of the bare Fock blocks. The whole elimination
    assumes this is zero; it is not for a non-canonical reference. */
@@ -337,12 +338,6 @@ void relin_init(int C_irr) {
     outfile->Printf("\tmax bare Fock off-diagonal  = %5.1e\n", fock_offdiag_max_);
 
     relin_partition_check(C_irr);
-    if (eom_params.relin_packed)
-        throw PsiException(
-            "RELIN_PACKED is not complete yet: the Davidson subspace algebra (G build, residual, schmidt_add, "
-            "restart) still reads full-size doubles vectors. Leave it off.",
-            __FILE__, __LINE__);
-
     relin_packed_setup(C_irr);
     relin_packed_check(C_irr);
     outfile->Printf("\n");
@@ -394,6 +389,14 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         sprintf(S1_lbl, "%s %d", "SIA", i);
         sprintf(S2_lbl, "%s %d", "SIjAb", i);
 
+        /* The completed vector has amplitudes outside the active corner, so it
+           must never go back through the packed store. Load the explicit part
+           once, then pin the working buffers for the rest of this root. */
+        if (relin_packed_on()) {
+            relin_load_C2(i, C_irr);
+            relin_work_hold(true);
+        }
+
         /* (1) Rebuild the eliminated amplitudes at this root's own eigenvalue.
                Re-running the sigma regenerates the doubles sigma from the
                converged vector; with the override in place the fold divides by
@@ -410,7 +413,10 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         omega_override_on_ = false;
 
         /* (2) Completed doubles: the explicit part plus the rebuilt part. */
-        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        int c2f;
+        const char *c2l;
+        relin_open_C2(i, C_irr, &c2f, &c2l);
+        global_dpd_->buf4_init(&C2, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         global_dpd_->buf4_init(&rQ, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN rQ(Ij,Ab)");
         global_dpd_->buf4_axpy(&rQ, &C2, 1.0);
         global_dpd_->buf4_close(&rQ);
@@ -418,7 +424,7 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
 
         /* (3) Renormalise the completed vector. */
         global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
-        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        global_dpd_->buf4_init(&C2, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         double nrm = std::sqrt(relin_bilinear(&C1, &C2, &C1, &C2, C_irr));
         if (nrm > 0.0) {
             global_dpd_->file2_scm(&C1, 1.0 / nrm);
@@ -442,10 +448,14 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         eom_params.relin = saved;
 
         /* (5) Rayleigh quotient and the residual against that operator. */
+        int s2f;
+        const char *s2l;
+        relin_open_C2(i, C_irr, &c2f, &c2l);
+        relin_open_S2(i, C_irr, &s2f, &s2l);
         global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
-        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, C2_lbl);
+        global_dpd_->buf4_init(&C2, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         global_dpd_->file2_init(&S1, PSIF_EOM_SIA, C_irr, 0, 1, S1_lbl);
-        global_dpd_->buf4_init(&S2, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, S2_lbl);
+        global_dpd_->buf4_init(&S2, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
 
         double num = relin_bilinear(&C1, &C2, &S1, &S2, C_irr);
         double den = relin_bilinear(&C1, &C2, &C1, &C2, C_irr);
@@ -466,6 +476,17 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         global_dpd_->file2_close(&S1);
         global_dpd_->buf4_close(&C2);
         global_dpd_->file2_close(&C1);
+
+        if (relin_packed_on()) {
+            /* Everything downstream of the solve reads "CMnEf i" as a full-size
+               buffer, so leave the completed vector there. The packed store uses
+               a different label, so nothing is overwritten. */
+            dpdbuf4 Wk;
+            global_dpd_->buf4_init(&Wk, relin_work_file(), C_irr, 0, 5, 0, 5, 0, relin_work_C2_label());
+            global_dpd_->buf4_copy(&Wk, PSIF_EOM_CMnEf, C2_lbl);
+            global_dpd_->buf4_close(&Wk);
+            relin_work_hold(false);
+        }
 
         outfile->Printf("\t%4d  %14.10lf  %14.10lf  %10.2e  %12.2e\n", i + 1, lambda[i], rho, rho - lambda[i], rnorm);
 
@@ -793,6 +814,7 @@ RelinPackedScope::~RelinPackedScope() { dpd_set_default(0); }
 
 const char *relin_work_C2_label() { return "RELIN C2 work"; }
 const char *relin_work_S2_label() { return "RELIN S2 work"; }
+const char *relin_acc_label() { return "RELIN acc work"; }
 int relin_work_file() { return PSIF_EOM_TMP; }
 
 void relin_load_C2(int index, int C_irr) {
@@ -804,17 +826,21 @@ void relin_load_S2(int index, int C_irr) {
 }
 
 void relin_save_C2(int index, int C_irr) {
+    if (work_hold_) return;
     relin_pack(relin_work_file(), relin_work_C2_label(), PSIF_EOM_CMnEf, relin_packed_C2_label(index), C_irr);
 }
 
 void relin_save_S2(int index, int C_irr) {
+    if (work_hold_) return;
     relin_pack(relin_work_file(), relin_work_S2_label(), PSIF_EOM_SIjAb, relin_packed_S2_label(index), C_irr);
 }
+
+void relin_work_hold(bool on) { work_hold_ = on; }
 
 void relin_open_C2(int index, int C_irr, int *file, const char **label) {
     static char lbl[32];
     if (relin_packed_on()) {
-        relin_load_C2(index, C_irr);
+        if (!work_hold_) relin_load_C2(index, C_irr);
         *file = relin_work_file();
         *label = relin_work_C2_label();
         return;
@@ -827,7 +853,7 @@ void relin_open_C2(int index, int C_irr, int *file, const char **label) {
 void relin_open_S2(int index, int C_irr, int *file, const char **label) {
     static char lbl[32];
     if (relin_packed_on()) {
-        relin_load_S2(index, C_irr);
+        if (!work_hold_) relin_load_S2(index, C_irr);
         *file = relin_work_file();
         *label = relin_work_S2_label();
         return;
@@ -880,12 +906,12 @@ void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {
     }
 }
 
-void relin_fold(const char *sigma2_label, const char *out_label, int C_irr) {
+void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label, int C_irr) {
     dpdbuf4 S2, rQ;
 
     if (!init_done_) throw PsiException("RELIN: relin_fold before relin_init.", __FILE__, __LINE__);
 
-    global_dpd_->buf4_init(&S2, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, sigma2_label);
+    global_dpd_->buf4_init(&S2, sigma2_file, C_irr, 0, 5, 0, 5, 0, sigma2_label);
     global_dpd_->buf4_copy(&S2, PSIF_EOM_TMP, out_label);
     global_dpd_->buf4_close(&S2);
 
