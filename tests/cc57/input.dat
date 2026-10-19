@@ -3,7 +3,9 @@
 #! so the excitation energy must come out independent of where the explicit /
 #! eliminated boundary is drawn -- including the two extremes, no doubles
 #! explicit at all and every double explicit. Any dependence on RELIN_CUTOFF
-#! here is an implementation error, not an approximation.
+#! here is an implementation error, not an approximation. The energy compared
+#! below is the one RELIN reports after completing the eigenvector, so this also
+#! covers the post-processing path.
 
 molecule h2o {
   0 1

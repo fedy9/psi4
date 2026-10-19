@@ -960,6 +960,12 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         }
 
         // => Post-process this symmetry block of states <=
+        // ==> Complete the relinearized eigenvectors <==
+        // Rebuilds each root's eliminated amplitudes at its own converged
+        // eigenvalue and refines the energy, so that everything downstream
+        // (RAMPS, R0, amplitude printing) sees a whole vector rather than just
+        // its explicit part. Must precede write_Rs.
+        if (relin_on()) relin_finalize(C_irr, lambda_old.data(), converged);
         // ==> Write Cs and energies to RAMPS file <==
         write_Rs(C_irr, lambda_old, converged);
         // ==> Compute R0 and normalize - also do any orthogonality checks <==
