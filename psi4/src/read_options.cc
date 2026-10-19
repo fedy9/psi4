@@ -2286,10 +2286,10 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         May help efficiency, but hazardous when solving for higher roots. -*/
         options.add_bool("COLLAPSE_WITH_LAST_CC3", false);
         /*- Do fold ("relinearize") the inactive part of the doubles space in an
-        EOM-CC2 computation, leaving only the singles plus an active corner of the
-        doubles as explicit unknowns? The eliminated amplitudes are reconstructed
+        EOM-CC2 computation, leaving the singles plus an active corner of the
+        doubles as explicit unknowns? The eliminated amplitudes are obtained
         analytically at a fixed omega, which is exact when that omega equals the
-        true eigenvalue. EOM_CC2 with an RHF reference only. -*/
+        true eigenvalue. EOM_CC2 with an RHF reference and canonical orbitals only. -*/
         options.add_bool("RELIN", false);
         /*- Active-space cutoff for !RELIN!, in hartree. An orbital is active if its
         smallest single-excitation gap lies within this distance above
@@ -2303,17 +2303,19 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         elimination exact for that root, which is how the implementation is
         verified. -*/
         options.add_double("RELIN_OMEGA_FIXED", 0.0);
-        /*- Hold the explicit doubles of a !RELIN! computation in a buffer
-        dimensioned by the active space instead of the full one, so that both the
-        Davidson subspace storage and the cost of the dots and axpys over it scale
-        with the active fraction rather than the full doubles space. Measured on
-        furan/cc-pVDZ: 1.6-1.8 times faster and 6-29 times smaller, over active
-        fractions from 12% down to 0.07%. The arithmetic is mathematically the
-        same, but the packed buffers sum their elements in a different order, so
-        results agree with the unpacked path to roughly 1e-13 rather than to the
-        last bit -- far below any convergence threshold, and exactly bitwise when
-        the active space is the whole doubles space. -*/
+        /*- Store the explicit doubles of a !RELIN! computation in buffers
+        dimensioned by the active space rather than the full doubles space, so the
+        Davidson subspace storage and the work over it scale with the active
+        fraction. Results agree with the unpacked storage to rounding. -*/
         options.add_bool("RELIN_PACKED", true);
+        /*- Do finalize the converged !RELIN! eigenvectors? Reconstructs each root's
+        eliminated amplitudes at its own eigenvalue, stores the full vector, and
+        reports its Rayleigh quotient with the unfolded EOM-CC2 operator in place
+        of the relinearized eigenvalue, with its residual norm. Costs one sigma
+        per root. If off, the stored eigenvector, and R0 and the printed amplitudes
+        derived from it, cover only the explicit space, the raw relinearized
+        eigenvalue is reported, and a bound on the eliminated share is printed. -*/
+        options.add_bool("RELIN_FINALIZE", true);
         /*- Complex tolerance applied in CCEOM computations -*/
         options.add_double("COMPLEX_TOLERANCE", 1E-12);
         /*- Convergence criterion for norm of the residual vector in the Davidson algorithm for CC-EOM. -*/

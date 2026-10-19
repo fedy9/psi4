@@ -67,14 +67,13 @@ void cc2_sigma(int i, int C_irr) {
     char SIjAb_lbl[32];
     int Gej, Gab, Gij, Gj, Gi, Ge, nrows, length, E, e, I;
     int Gam, Gef, Gim, Ga, Gm, ncols, A, a, am;
-    /* which buffer the singles-from-doubles terms read: the stored C2, or
-       C2^P + C2^Q when the inactive doubles are folded (see relin.cc) */
-    int c2_file = PSIF_EOM_CMnEf;
+    /* C2 read by the singles-from-doubles terms: the stored C2, or C2^P + C2^Q
+       when RELIN folds the inactive doubles */
+    int c2_file;
     char c2_lbl[32];
     const char *c2_adapt_lbl = "2CMnEf - CMnfE";
-    /* where the stored doubles vector is read from and the doubles sigma is
-       accumulated: the vectors themselves when stored full size, or full-size
-       working buffers when the store is packed (see relin.cc) */
+    /* stored C2 and the S2 accumulation target: the vectors themselves, or
+       full-size working buffers when RELIN_PACKED holds them packed */
     int c2_src_file;
     const char *c2_src_lbl;
     int s2_file;
@@ -91,7 +90,6 @@ void cc2_sigma(int i, int C_irr) {
         s2_file = PSIF_EOM_SIjAb;
         sprintf(s2_lbl, "%s %d", "SIjAb", i);
         if (relin_packed_on()) {
-            /* accumulate into a full-size working buffer, then pack it */
             dpdbuf4 S2w;
             s2_file = relin_work_file();
             snprintf(s2_lbl, sizeof(s2_lbl), "%s", relin_work_S2_label());
@@ -215,19 +213,14 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_close(&Z);
         global_dpd_->buf4_close(&SIjAb);
 
-        /* ---- Relinearized EOM-CC2: fold the eliminated (Q-space) doubles ----
-           SIjAb now holds A_DS C1 + D C2^P, where C2 is zero outside the active
-           corner. Because the doubles self-coupling D is the bare, diagonal
-           Fock operator, the Q part of that sigma is exactly the Q-space
-           numerator A_DS^Q C1, so dividing it by (omega_fixed - D) yields the
-           eliminated amplitudes without any extra contraction. See relin.cc.
-
-           The singles-from-doubles terms that follow are then evaluated once on
-           C2^P + C2^Q, which is what the P-space equation calls for. */
+        /* RELIN: S2 now holds A_DS C1 + D C2^P. With D diagonal and C2 zero on Q,
+           its Q part is A_DS^Q C1, so dividing by (omega_fixed - D) gives C2^Q
+           without another contraction (see relin.cc). The singles-from-doubles
+           terms below then act on C2^P + C2^Q. */
         if (relin_on()) {
             dpdbuf4 Ctot, Ctmp;
 
-            relin_fold(s2_file, s2_lbl, "RELIN rQ(Ij,Ab)", C_irr);
+            relin_fold(s2_file, s2_lbl, "RELIN rQ(Ij,Ab)", C_irr, i);
 
             global_dpd_->buf4_init(&Ctot, c2_src_file, C_irr, 0, 5, 0, 5, 0, c2_src_lbl);
             global_dpd_->buf4_copy(&Ctot, PSIF_EOM_TMP, "RELIN Ctot(Ij,Ab)");
@@ -238,8 +231,7 @@ void cc2_sigma(int i, int C_irr) {
             global_dpd_->buf4_axpy(&Ctmp, &Ctot, 1.0);
             global_dpd_->buf4_close(&Ctmp);
 
-            /* 2 C(Ij,Ab) - C(Ij,bA), the same spin-adapted combination sort_C
-               forms for the ordinary doubles vector */
+            /* 2 C(Ij,Ab) - C(Ij,bA), as sort_C forms for the stored vector */
             global_dpd_->buf4_sort(&Ctot, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN Ctot(Ij,bA)");
             global_dpd_->buf4_copy(&Ctot, PSIF_EOM_TMP, "RELIN 2Ctot - CtotbA");
             global_dpd_->buf4_close(&Ctot);
@@ -330,10 +322,7 @@ void cc2_sigma(int i, int C_irr) {
         global_dpd_->buf4_close(&WMnIe);
         global_dpd_->file2_close(&SIA);
 
-        /* Restrict the stored doubles sigma to the explicit (P) space. The
-           eliminated amplitudes are not stored, and their equation was already
-           accounted for by the fold above. This uses the exact complement of
-           the mask relin_fold applied, via the same predicate. */
+        /* Restrict the stored S2 to P; the Q equation was absorbed by the fold. */
         if (relin_on()) {
             dpdbuf4 S2P;
             global_dpd_->buf4_init(&S2P, s2_file, C_irr, 0, 5, 0, 5, 0, s2_lbl);

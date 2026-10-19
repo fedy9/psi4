@@ -165,6 +165,9 @@ void get_eom_params(SharedWavefunction ref_wfn, Options &options) {
     eom_params.relin_omega_fixed = options.get_double("RELIN_OMEGA_FIXED");
     eom_params.relin_omega_given = options["RELIN_OMEGA_FIXED"].has_changed();
     eom_params.relin_packed = options.get_bool("RELIN_PACKED");
+    eom_params.relin_finalize = options.get_bool("RELIN_FINALIZE");
+    if (eom_params.relin && params.wfn != "EOM_CC2")
+        throw PsiException("RELIN is only implemented for WFN = EOM_CC2.", __FILE__, __LINE__);
 
     outfile->Printf("\n\tCCEOM parameters:\n");
     outfile->Printf("\t-----------------\n");
@@ -194,6 +197,7 @@ void get_eom_params(SharedWavefunction ref_wfn, Options &options) {
             outfile->Printf("\tRELIN omega_fixed           = %14.10lf (input)\n", eom_params.relin_omega_fixed);
         else
             outfile->Printf("\tRELIN omega_fixed           = from CIS guess\n");
+        outfile->Printf("\tRELIN finalize              = %s\n", eom_params.relin_finalize ? "YES" : "NO");
     }
     if (eom_params.follow_root) outfile->Printf("\tRoot following for CC3 turned on.\n");
     outfile->Printf("\n\n");

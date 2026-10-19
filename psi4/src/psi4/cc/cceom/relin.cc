@@ -131,13 +131,18 @@ std::vector<double> f_vir_;    /* bare Fock diagonal, absolute DPD vir index */
 std::vector<char> act_occ_;    /* 1 if this occupied orbital is active */
 std::vector<char> act_vir_;    /* 1 if this virtual orbital is active  */
 double omega_fixed_ = 0.0;     /* folded at this omega (mean of targets)   */
-bool omega_override_on_ = false;  /* relin_finalize folds at a root's own  */
-double omega_override_ = 0.0;     /* converged eigenvalue instead          */
+bool omega_override_on_ = false;  /* relin_reconstruct folds at a root's own */
+double omega_override_ = 0.0;     /* converged eigenvalue instead            */
 double omega_screen_ = 0.0;    /* window keyed off this omega (max target) */
 double cutoff_abs_ = 0.0;
 bool init_done_ = false;
 bool warned_small_denom_ = false;
 bool work_hold_ = false;
+/* B-norm of the eliminated part per trial vector, indexed as the solver indexes
+   them. rQ is linear in the trial vector and B is positive definite, so by the
+   triangle inequality the eigenvector's eliminated B-norm is at most
+   sum_i |alpha_i| * ||rQ_i||; the exact value would need every rQ held at once. */
+std::vector<double> q_norm_by_vector_;
 
 /* Largest off-diagonal element of the bare Fock blocks. The whole elimination
    assumes this is zero; it is not for a non-canonical reference. */
@@ -240,44 +245,47 @@ void relin_partition_check(int C_irr) {
 
 bool relin_on() { return eom_params.relin && params.wfn == "EOM_CC2"; }
 
-double relin_omega_fixed() { return omega_fixed_; }
+double relin_vector_q_norm(int index) {
+    if (index < 0 || index >= (int)q_norm_by_vector_.size()) return 0.0;
+    return q_norm_by_vector_[index];
+}
+
+void relin_collapse_q_norms(double **alpha, int L, int num) {
+    std::vector<double> collapsed(num, 0.0);
+    for (int i = 0; i < num; ++i)
+        for (int j = 0; j < L; ++j) collapsed[i] += std::fabs(alpha[j][i]) * relin_vector_q_norm(j);
+    q_norm_by_vector_ = collapsed;
+}
 
 bool relin_active(int i, int j, int a, int b) {
     return act_occ_[i] && act_occ_[j] && act_vir_[a] && act_vir_[b];
 }
 
 void relin_init(int C_irr) {
-    if (params.wfn != "EOM_CC2")
-        throw PsiException("RELIN: only implemented for EOM_CC2.", __FILE__, __LINE__);
     if (params.eom_ref != 0)
         throw PsiException("RELIN: only implemented for an RHF reference.", __FILE__, __LINE__);
     if (params.local)
         throw PsiException("RELIN: not compatible with LOCAL.", __FILE__, __LINE__);
     if (params.full_matrix)
         throw PsiException("RELIN: not compatible with FULL_MATRIX.", __FILE__, __LINE__);
-    /* relin_finalize now stores completed R2 amplitudes, so this is no longer a
-       question of the vector being incomplete -- but nothing downstream of it
-       (L*R overlaps, densities, properties) has been validated against a
-       reference yet, so refuse rather than return unchecked numbers. */
+    /* L*R overlaps, densities and properties have not been validated for
+       relinearized vectors. */
     if (eom_params.dot_with_L)
         throw PsiException("RELIN: overlaps with L have not been validated for relinearized vectors yet.", __FILE__,
                            __LINE__);
 
     relin_read_bare_fock();
 
-    /* The elimination is exact only because the doubles self-coupling is
-       diagonal, which requires canonical orbitals. Refuse rather than return
-       numbers that are quietly wrong. */
+    /* The elimination is exact only for a diagonal doubles self-coupling, i.e.
+       canonical orbitals. */
     if (fock_offdiag_max_ > 1.0e-6)
         throw PsiException(
             "RELIN: the bare Fock matrix is not diagonal (non-canonical orbitals); the elimination would be invalid.",
             __FILE__, __LINE__);
 
-    /* omega_fixed: folded at the MEAN of the targeted roots' guess energies;
-       the active-space window is keyed off the MAX of them instead, so a
-       configuration close to resonance with the highest-lying target is kept
-       explicit even when it sits far from the mean. The two references may
-       differ because the screening choice never enters the fold arithmetic. */
+    /* Fold at the MEAN of the targeted roots' guess energies, but key the
+       active-space window off the MAX, so configurations near resonance with the
+       highest target stay explicit. The window never enters the fold arithmetic. */
     int nroots = eom_params.cs_per_irrep[C_irr];
     double guess_ref = 0.0;
     bool have_guess = ((int)ss_evals.size() >= nroots) && (nroots > 0);
@@ -301,12 +309,8 @@ void relin_init(int C_irr) {
 
     cutoff_abs_ = eom_params.relin_cutoff + std::max(omega_fixed_, omega_screen_);
 
-    /* Active orbitals by bare orbital energy: an occupied orbital is active if
-       its smallest possible single-excitation gap lies below the cutoff, and
-       likewise for a virtual. Selecting on energy rather than on orbital index
-       matters here -- psi4's QT ordering is blocked by irrep, not sorted by
-       energy, so an index window would not mean what it means in a
-       symmetry-free code. */
+    /* An orbital is active if its smallest single-excitation gap lies below the
+       cutoff. Select by energy, not index: QT ordering is blocked by irrep. */
     double eps_lumo = *std::min_element(f_vir_.begin(), f_vir_.end());
     double eps_homo = *std::max_element(f_occ_.begin(), f_occ_.end());
 
@@ -341,7 +345,6 @@ void relin_init(int C_irr) {
     relin_packed_setup(C_irr);
     relin_packed_check(C_irr);
     outfile->Printf("\n");
-
 }
 
 namespace {
@@ -353,8 +356,7 @@ namespace {
 double relin_bilinear(dpdfile2 *X1, dpdbuf4 *X2, dpdfile2 *Y1, dpdbuf4 *Y2, int C_irr) {
     dpdbuf4 X2bA;
 
-    /* DPD's dot routines initialise both operands, so a buffer dotted against
-       itself must use the dedicated self variants. */
+    /* a buffer dotted with itself must use the _self variants */
     double val = 2.0 * ((X1 == Y1) ? global_dpd_->file2_dot_self(X1) : global_dpd_->file2_dot(X1, Y1));
     val += 2.0 * ((X2 == Y2) ? global_dpd_->buf4_dot_self(X2) : global_dpd_->buf4_dot(X2, Y2));
     global_dpd_->buf4_sort(X2, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN bilinear X2(Ij,bA)");
@@ -366,20 +368,46 @@ double relin_bilinear(dpdfile2 *X1, dpdbuf4 *X2, dpdfile2 *Y1, dpdbuf4 *Y2, int 
 
 }  // namespace
 
-void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converged) {
+void relin_export_pspace(int C_irr, const double *lambda_hint, const double *share_bound,
+                         const std::vector<bool> &converged) {
+    dpdbuf4 C2;
+    char C2_lbl[32];
+
+    outfile->Printf("\n\tRELIN: RELIN_FINALIZE is off, so the reported eigenvalues are the raw\n");
+    outfile->Printf("\t       relinearized ones and the stored R amplitudes cover only the\n");
+    outfile->Printf("\t       explicit space. R0, the printed amplitudes and anything derived\n");
+    outfile->Printf("\t       from them are incomplete. Set RELIN_FINALIZE to complete each\n");
+    outfile->Printf("\t       eigenvector at its own eigenvalue.\n\n");
+
+    outfile->Printf("\tRoot   relin omega      elim share at omega_fixed (bound)\n");
+
+    for (int i = 0; i < eom_params.cs_per_irrep[C_irr]; ++i) {
+        if (!converged[i]) continue;
+        sprintf(C2_lbl, "%s %d", "CMnEf", i);
+
+        outfile->Printf("\t%4d  %14.10lf  %10.2e\n", i + 1, lambda_hint[i], share_bound[i]);
+
+        /* downstream code reads "CMnEf i" full size */
+        if (relin_packed_on()) {
+            relin_load_C2(i, C_irr);
+            global_dpd_->buf4_init(&C2, relin_work_file(), C_irr, 0, 5, 0, 5, 0, relin_work_C2_label());
+            global_dpd_->buf4_copy(&C2, PSIF_EOM_CMnEf, C2_lbl);
+            global_dpd_->buf4_close(&C2);
+        }
+    }
+    outfile->Printf("\n");
+}
+
+void relin_reconstruct(int C_irr, double *lambda, const std::vector<bool> &converged) {
     dpdfile2 C1, S1, R1;
-    dpdbuf4 C2, S2, R2, rQ;
-    char C1_lbl[32], C2_lbl[32], S1_lbl[32], S2_lbl[32];
+    dpdbuf4 C2, S2, rQ;
+    char C1_lbl[32], C2_lbl[32], S1_lbl[32];
 
-    if (!init_done_) throw PsiException("RELIN: relin_finalize before relin_init.", __FILE__, __LINE__);
+    if (!init_done_) throw PsiException("RELIN: relin_reconstruct before relin_init.", __FILE__, __LINE__);
 
-    outfile->Printf("\n\tRelinearized EOM-CC2: completing the eigenvectors\n");
-    outfile->Printf("\tEach root's eliminated amplitudes are rebuilt at its own converged\n");
-    outfile->Printf("\teigenvalue and the completed vector is measured against the real,\n");
-    outfile->Printf("\tunfolded operator. Hbar is not Hermitian, so the Rayleigh quotient is\n");
-    outfile->Printf("\ta refined estimate rather than a bound, and the residual norm is a\n");
-    outfile->Printf("\tdiagnostic: a large value means the vector is not an eigenvector.\n");
-    outfile->Printf("\n\tRoot   relin omega      Rayleigh omega       shift    true residual\n");
+    outfile->Printf("\n\tRelinearized EOM-CC2: reconstructing the full eigenvectors\n");
+    outfile->Printf("\tRitz omega and residual are evaluated against the full EOM-CC2 Hamiltonian.\n");
+    outfile->Printf("\n\tRoot   Ritz omega       true residual\n");
 
     for (int i = 0; i < eom_params.cs_per_irrep[C_irr]; ++i) {
         if (!converged[i]) continue;
@@ -387,32 +415,23 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         sprintf(C1_lbl, "%s %d", "CME", i);
         sprintf(C2_lbl, "%s %d", "CMnEf", i);
         sprintf(S1_lbl, "%s %d", "SIA", i);
-        sprintf(S2_lbl, "%s %d", "SIjAb", i);
 
-        /* The completed vector has amplitudes outside the active corner, so it
-           must never go back through the packed store. Load the explicit part
-           once, then pin the working buffers for the rest of this root. */
+        /* The completed vector has amplitudes outside the active corner, so pin
+           the working buffers instead of going back through the packed store. */
         if (relin_packed_on()) {
             relin_load_C2(i, C_irr);
             relin_work_hold(true);
         }
 
-        /* (1) Rebuild the eliminated amplitudes at this root's own eigenvalue.
-               Re-running the sigma regenerates the doubles sigma from the
-               converged vector; with the override in place the fold divides by
-               (lambda - D) instead of (omega_fixed - D). */
+        /* Fold at this root's own eigenvalue. */
         omega_override_on_ = true;
         omega_override_ = lambda[i];
-        /* cc2_sigma accumulates into the doubles sigma and reads the sorted
-           amplitude buffers, so it needs the same preparation diag.cc performs
-           before every sigma evaluation. */
         init_S1(i, C_irr);
         init_S2(i, C_irr);
         sort_C(i, C_irr);
         cc2_sigma(i, C_irr);
         omega_override_on_ = false;
 
-        /* (2) Completed doubles: the explicit part plus the rebuilt part. */
         int c2f;
         const char *c2l;
         relin_open_C2(i, C_irr, &c2f, &c2l);
@@ -422,76 +441,56 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
         global_dpd_->buf4_close(&rQ);
         global_dpd_->buf4_close(&C2);
 
-        /* (3) Renormalise the completed vector. */
         global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
         global_dpd_->buf4_init(&C2, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         double nrm = std::sqrt(relin_bilinear(&C1, &C2, &C1, &C2, C_irr));
+
+        /* Unfolded sigma of the completed vector C = (C1, C2^P + rQ) without a
+           second sigma. The singles and the P doubles of the sigma above are already
+           the unfolded ones (the singles terms read C2^P + rQ, and D is diagonal).
+           The Q doubles, (A_DS C1)^Q + D rQ, are replaced by lambda * rQ, where
+           lambda is the relinearized eigenvalue at which rQ was just folded:
+           rQ = (lambda - D)^-1 (A_DS C1)^Q makes the replacement exact for this C.
+           The residual sigma - rho C is (lambda - rho) rQ on Q. */
+        double rho = lambda[i], rnorm = 0.0;
+        if (nrm > 0.0) {
+            int s2f;
+            const char *s2l;
+            relin_open_S2(i, C_irr, &s2f, &s2l);
+            global_dpd_->buf4_init(&S2, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
+            global_dpd_->buf4_copy(&S2, PSIF_EOM_TMP, "RELIN ritz S2");
+            global_dpd_->buf4_close(&S2);
+            global_dpd_->buf4_init(&S2, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN ritz S2");
+            global_dpd_->buf4_init(&rQ, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN rQ(Ij,Ab)");
+            global_dpd_->buf4_axpy(&rQ, &S2, lambda[i]);
+            global_dpd_->buf4_close(&rQ);
+
+            global_dpd_->file2_init(&S1, PSIF_EOM_SIA, C_irr, 0, 1, S1_lbl);
+            rho = relin_bilinear(&C1, &C2, &S1, &S2, C_irr) / (nrm * nrm);
+
+            /* residual sigma - rho C, built in place in the sigma copies */
+            global_dpd_->file2_copy(&S1, PSIF_EOM_TMP, "RELIN resid R1");
+            global_dpd_->file2_close(&S1);
+            global_dpd_->file2_init(&R1, PSIF_EOM_TMP, C_irr, 0, 1, "RELIN resid R1");
+            global_dpd_->file2_axpy(&C1, &R1, -rho, 0);
+            global_dpd_->buf4_axpy(&C2, &S2, -rho);
+            rnorm = std::sqrt(std::max(relin_bilinear(&R1, &S2, &R1, &S2, C_irr), 0.0)) / nrm;
+            global_dpd_->file2_close(&R1);
+            global_dpd_->buf4_close(&S2);
+        }
+
+        /* Renormalise. */
         if (nrm > 0.0) {
             global_dpd_->file2_scm(&C1, 1.0 / nrm);
             global_dpd_->buf4_scm(&C2, 1.0 / nrm);
         }
+        /* downstream code reads "CMnEf i" full size */
+        global_dpd_->buf4_copy(&C2, PSIF_EOM_CMnEf, C2_lbl);
         global_dpd_->buf4_close(&C2);
         global_dpd_->file2_close(&C1);
+        if (relin_packed_on()) relin_work_hold(false);
 
-        /* (4) Sigma of the completed vector against the REAL operator: with the
-               full doubles vector present, the ordinary (unfolded) sigma is the
-               true one, so switch the fold off for this one evaluation. */
-        bool saved = eom_params.relin;
-        eom_params.relin = false;
-        /* cc2_sigma accumulates into the doubles sigma and reads the sorted
-           amplitude buffers, so it needs the same preparation diag.cc performs
-           before every sigma evaluation. */
-        init_S1(i, C_irr);
-        init_S2(i, C_irr);
-        sort_C(i, C_irr);
-        cc2_sigma(i, C_irr);
-        eom_params.relin = saved;
-
-        /* (5) Rayleigh quotient and the residual against that operator. */
-        int s2f;
-        const char *s2l;
-        relin_open_C2(i, C_irr, &c2f, &c2l);
-        relin_open_S2(i, C_irr, &s2f, &s2l);
-        global_dpd_->file2_init(&C1, PSIF_EOM_CME, C_irr, 0, 1, C1_lbl);
-        global_dpd_->buf4_init(&C2, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
-        global_dpd_->file2_init(&S1, PSIF_EOM_SIA, C_irr, 0, 1, S1_lbl);
-        global_dpd_->buf4_init(&S2, s2f, C_irr, 0, 5, 0, 5, 0, s2l);
-
-        double num = relin_bilinear(&C1, &C2, &S1, &S2, C_irr);
-        double den = relin_bilinear(&C1, &C2, &C1, &C2, C_irr);
-        double rho = (den != 0.0) ? num / den : 0.0;
-
-        /* residual = S - rho * C, built in scratch so S and C are left intact */
-        global_dpd_->file2_copy(&S1, PSIF_EOM_TMP, "RELIN resid R1");
-        global_dpd_->buf4_copy(&S2, PSIF_EOM_TMP, "RELIN resid R2");
-        global_dpd_->file2_init(&R1, PSIF_EOM_TMP, C_irr, 0, 1, "RELIN resid R1");
-        global_dpd_->buf4_init(&R2, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN resid R2");
-        global_dpd_->file2_axpy(&C1, &R1, -rho, 0);
-        global_dpd_->buf4_axpy(&C2, &R2, -rho);
-        double rnorm = std::sqrt(std::fabs(relin_bilinear(&R1, &R2, &R1, &R2, C_irr)));
-        global_dpd_->buf4_close(&R2);
-        global_dpd_->file2_close(&R1);
-
-        global_dpd_->buf4_close(&S2);
-        global_dpd_->file2_close(&S1);
-        global_dpd_->buf4_close(&C2);
-        global_dpd_->file2_close(&C1);
-
-        if (relin_packed_on()) {
-            /* Everything downstream of the solve reads "CMnEf i" as a full-size
-               buffer, so leave the completed vector there. The packed store uses
-               a different label, so nothing is overwritten. */
-            dpdbuf4 Wk;
-            global_dpd_->buf4_init(&Wk, relin_work_file(), C_irr, 0, 5, 0, 5, 0, relin_work_C2_label());
-            global_dpd_->buf4_copy(&Wk, PSIF_EOM_CMnEf, C2_lbl);
-            global_dpd_->buf4_close(&Wk);
-            relin_work_hold(false);
-        }
-
-        outfile->Printf("\t%4d  %14.10lf  %14.10lf  %10.2e  %12.2e\n", i + 1, lambda[i], rho, rho - lambda[i], rnorm);
-
-        /* Hand the refined value back: write_Rs and rzero run next and should
-           see the completed vector together with the energy that belongs to it. */
+        outfile->Printf("\t%4d  %14.10lf  %12.2e\n", i + 1, rho, rnorm);
         lambda[i] = rho;
     }
     outfile->Printf("\n");
@@ -516,11 +515,9 @@ void relin_finalize(int C_irr, double *lambda, const std::vector<bool> &converge
    true -- an arbitrary index subset could not be described this way at all.
 
    A second instance is needed because the singles space stays full while the
-   doubles space shrinks, and one instance cannot hold both dimensions. The
-   instance is rebuilt per irrep, since the active window depends on that
-   irrep's omega_screen. dpd_set_default is global state and a buf4_init under
-   the wrong instance silently gets wrong offsets, so every switch goes through
-   the RAII guard below and never a bare call.
+   doubles space shrinks. It is rebuilt per irrep, since the active window
+   depends on that irrep's omega_screen. Every switch to it goes through
+   RelinPackedScope.
    ------------------------------------------------------------------------ */
 namespace {
 
@@ -534,17 +531,6 @@ int n_act_occ_ = 0, n_act_vir_ = 0;
 /* DPD keeps pointers to these, so they must outlive the instance */
 std::vector<int> packed_cachefiles_;
 int **packed_cachelist_ = nullptr;
-
-/* Switch the default DPD instance for a scope and always switch back. */
-struct PackedScope {
-    explicit PackedScope(int num) {
-        if (!dpd_list[num]) throw PsiException("RELIN: packed DPD instance is not open.", __FILE__, __LINE__);
-        dpd_set_default(num);
-    }
-    ~PackedScope() { dpd_set_default(0); }
-    PackedScope(const PackedScope &) = delete;
-    PackedScope &operator=(const PackedScope &) = delete;
-};
 
 /* Active orbitals must be contiguous within each irrep for a per-irrep count to
    describe them. Fills act_occpi_/act_virtpi_ and reports whether it holds. */
@@ -577,8 +563,6 @@ bool packed_contiguity() {
 }
 
 }  // namespace
-
-bool relin_packed_ready() { return packed_ready_; }
 
 void relin_packed_setup(int C_irr) {
     packed_ready_ = false;
@@ -669,7 +653,7 @@ void relin_packed_init(int packed_file, const char *packed_label, int C_irr) {
     dpdbuf4 P;
     if (!packed_ready_) throw PsiException("RELIN: packed buffer requested before setup.", __FILE__, __LINE__);
 
-    PackedScope scope(RELIN_DPD);
+    RelinPackedScope scope;
     global_dpd_->buf4_init(&P, packed_file, C_irr, 0, 5, 0, 5, 0, packed_label);
     global_dpd_->buf4_scm(&P, 0.0);
     global_dpd_->buf4_close(&P);
@@ -687,7 +671,7 @@ void relin_pack(int full_file, const char *full_label, int packed_file, const ch
         global_dpd_->buf4_mat_irrep_init(&Full, h);
         global_dpd_->buf4_mat_irrep_rd(&Full, h);
         {
-            PackedScope scope(RELIN_DPD);
+            RelinPackedScope scope;
             global_dpd_->buf4_init(&P, packed_file, C_irr, 0, 5, 0, 5, 0, packed_label);
             global_dpd_->buf4_mat_irrep_init(&P, h);
             for (int ij = 0; ij < P.params->rowtot[h]; ij++) {
@@ -719,7 +703,7 @@ void relin_unpack(int packed_file, const char *packed_label, int full_file, cons
         for (int ij = 0; ij < Full.params->rowtot[h]; ij++)
             for (int ab = 0; ab < Full.params->coltot[h ^ C_irr]; ab++) Full.matrix[h][ij][ab] = 0.0;
         {
-            PackedScope scope(RELIN_DPD);
+            RelinPackedScope scope;
             global_dpd_->buf4_init(&P, packed_file, C_irr, 0, 5, 0, 5, 0, packed_label);
             global_dpd_->buf4_mat_irrep_init(&P, h);
             global_dpd_->buf4_mat_irrep_rd(&P, h);
@@ -906,7 +890,7 @@ void relin_zero(dpdbuf4 *B, bool zero_active, int C_irr) {
     }
 }
 
-void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label, int C_irr) {
+void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label, int C_irr, int index) {
     dpdbuf4 S2, rQ;
 
     if (!init_done_) throw PsiException("RELIN: relin_fold before relin_init.", __FILE__, __LINE__);
@@ -916,6 +900,7 @@ void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label
     global_dpd_->buf4_close(&S2);
 
     double min_den = 0.0;
+    double qB = 0.0; /* B(rQ,rQ) = 2<rQ,rQ> - <rQ(Ij,bA),rQ> */
     bool have_min = false;
     size_t n_small = 0;
 
@@ -940,19 +925,31 @@ void relin_fold(int sigma2_file, const char *sigma2_label, const char *out_label
                         have_min = true;
                     }
                     if (aden < 1.0e-3) ++n_small;
-                    /* Always divide. Skipping near-singular elements (as the
-                       Davidson preconditioner legitimately does) would break
-                       the elimination identity; a small denominator here means
-                       a near-resonant configuration was wrongly left in Q, so
-                       report it instead of papering over it. */
+                    /* Always divide: skipping near-singular elements, as the
+                       preconditioner does, would break the identity. A small
+                       denominator means the configuration belongs in P. */
                     rQ.matrix[h][ij][ab] /= den;
                 }
+            }
+        }
+        /* The a<->b partner sits in the same row; P elements are already zero. */
+        for (int ij = 0; ij < rQ.params->rowtot[h]; ij++) {
+            for (int ab = 0; ab < rQ.params->coltot[h ^ C_irr]; ab++) {
+                int a = rQ.params->colorb[h ^ C_irr][ab][0];
+                int b = rQ.params->colorb[h ^ C_irr][ab][1];
+                double x = rQ.matrix[h][ij][ab];
+                qB += x * (2.0 * x - rQ.matrix[h][ij][rQ.params->colidx[b][a]]);
             }
         }
         global_dpd_->buf4_mat_irrep_wrt(&rQ, h);
         global_dpd_->buf4_mat_irrep_close(&rQ, h);
     }
     global_dpd_->buf4_close(&rQ);
+
+    if (index >= 0) {
+        if ((int)q_norm_by_vector_.size() <= index) q_norm_by_vector_.resize(index + 1, 0.0);
+        q_norm_by_vector_[index] = std::sqrt(std::max(qB, 0.0));
+    }
 
     if (n_small && !warned_small_denom_) {
         warned_small_denom_ = true;

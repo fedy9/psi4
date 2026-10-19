@@ -169,8 +169,7 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         global_dpd_->file2_close(&C1);
 
         sprintf(lbl, "%s %d", "CMnEf", L + i);
-        /* The accumulation target cannot share a working buffer with the
-           sources being summed into it, so it gets its own scratch. */
+        /* the sum cannot share a working buffer with its sources */
         int accf_CMnEf = PSIF_EOM_CMnEf;
         const char *accl_CMnEf = lbl;
         if (relin_packed_on()) {
@@ -247,8 +246,7 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         global_dpd_->file2_close(&C1);
 
         sprintf(lbl, "%s %d", "SIjAb", L + i);
-        /* The accumulation target cannot share a working buffer with the
-           sources being summed into it, so it gets its own scratch. */
+        /* the sum cannot share a working buffer with its sources */
         int accf_SIjAb = PSIF_EOM_SIjAb;
         const char *accl_SIjAb = lbl;
         if (relin_packed_on()) {
@@ -386,6 +384,8 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
             global_dpd_->buf4_close(&Sijab);
         }
     }
+
+    if (relin_on()) relin_collapse_q_norms(alpha_tot, L, num);
 
     free_block(alpha_tot);
 

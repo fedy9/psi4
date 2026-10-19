@@ -136,14 +136,9 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
     if (params.full_matrix) psio_read_entry(PSIF_EOM_R, "R0", (char *)&R0, sizeof(double));
 
     if (relin_packed_on()) {
-        /* Orthogonalise against the stored vectors inside the packed space. The
-           full-size route needs three full-size buffers per stored vector (the
-           residual's copy, its sort, and the stored vector materialised); this
-           needs one transfer in and one out, whatever the subspace size. Every
-           operand is packed and all of it is elementwise or a dot, so the result
-           is what the full-size route produced, not an approximation of it.
-           The caller's buffer is closed first, so nothing is cached behind our
-           back, and restored afterwards for the tail below. */
+        /* Orthogonalise inside the packed space: one pack and one unpack instead
+           of a full-size materialisation per stored vector. The caller's buffer
+           is closed while we work on its file, and reopened for the tail below. */
         int rf = RIjAb->file.filenum;
         char rl[PSIO_KEYLEN];
         strncpy(rl, RIjAb->file.label, PSIO_KEYLEN - 1);
@@ -183,7 +178,6 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
         global_dpd_->buf4_init(RIjAb, rf, irrep, 0, 5, 0, 5, 0, rl);
     }
 
-    /* The full-size route below is skipped when the packed loop above ran. */
     const int n_ortho = relin_packed_on() ? 0 : *numCs;
 
     for (i = 0; i < n_ortho; i++) {

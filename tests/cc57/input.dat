@@ -3,9 +3,8 @@
 #! so the excitation energy must come out independent of where the explicit /
 #! eliminated boundary is drawn -- including the two extremes, no doubles
 #! explicit at all and every double explicit. Any dependence on RELIN_CUTOFF
-#! here is an implementation error, not an approximation. The energy compared
-#! below is the one RELIN reports after completing the eigenvector, so this also
-#! covers the post-processing path.
+#! here is an implementation error, not an approximation. The reconstruction,
+#! Ritz, packed-storage and frozen-core paths are checked against the same identity.
 
 molecule h2o {
   0 1
@@ -39,38 +38,42 @@ for cutoff in [0.05, 1.0, 50.0]:
     clean()
     set_options({'cceom__relin': True,
                  'cceom__relin_cutoff': cutoff,
-                 'cceom__relin_omega_fixed': omega_ref})
+                 'cceom__relin_omega_fixed': omega_ref,
+                 'cceom__relin_packed': False,
+                 'cceom__relin_finalize': False})
     energy('eom-cc2')
     omega = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega_ref, omega, 7, f"RELIN excitation energy, cutoff {cutoff}")      #TEST
 
-    # Packing the explicit doubles into a buffer dimensioned by the active space
-    # changes the order in which the subspace dots sum their elements, so the two
-    # layouts agree to rounding (~1e-13 observed) rather than to the last bit;
-    # they are exactly bitwise only when the active space is the whole doubles
-    # space. A deviation far above rounding means an indexing or masking error,
-    # which is what this checks for.
+    # The Rayleigh quotient of the reconstructed (here exact) vector with the
+    # unfolded operator must give the same answer.
+    clean()
+    set_options({'cceom__relin_finalize': True})
+    energy('eom-cc2')
+    omega_ritz = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
+    compare_values(omega_ref, omega_ritz, 7, f"RELIN Ritz value, cutoff {cutoff}")         #TEST
+    set_options({'cceom__relin_finalize': False})
+
+    # Packed storage sums in a different order, so it agrees to rounding only.
     clean()
     set_options({'cceom__relin': True,
                  'cceom__relin_cutoff': cutoff,
                  'cceom__relin_omega_fixed': omega_ref,
                  'cceom__relin_packed': True})
     energy('eom-cc2')
-    omega_packed = variable(f'CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
+    omega_packed = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega, omega_packed, 12, f"RELIN packed == unpacked, cutoff {cutoff}")  #TEST
-    set_options({'cceom__relin_packed': False})
 
-# The identity must also hold with frozen core, which changes which orbitals the
-# active-space predicate sees: the correlated occupied space, and hence the
-# per-irrep offsets the masking and the packed layout are built from, both shift.
+# Frozen core shifts the per-irrep offsets the masking and packed layout use.
+# These runs use RELIN_FINALIZE (the default), so they also cover the Ritz step
+# with packed storage.
 clean()
 set_options({'freeze_core': True,
              'cceom__relin': False,
              'cceom__relin_packed': False,
+             'cceom__relin_finalize': True,
              'cceom__relin_omega_fixed': 0.0})
 energy('eom-cc2')
-# Reference taken from this run, like the all-electron one above, so the test
-# states the identity rather than depending on a number from elsewhere.
 omega_ref_fc = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
 
 for cutoff in [0.05, 1.0, 50.0]:

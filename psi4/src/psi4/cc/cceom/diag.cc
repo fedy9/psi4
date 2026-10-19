@@ -54,7 +54,6 @@
 #include "globals.h"
 #include "relin.h"
 #include "psi4/psi4-dec.h"
-#include "psi4/libpsi4util/exception.h"
 
 namespace psi {
 namespace cceom {
@@ -292,12 +291,7 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
 
 #endif
 
-        if (eom_params.relin && params.wfn != "EOM_CC2")
-            throw PsiException("RELIN is only implemented for WFN = EOM_CC2.", __FILE__, __LINE__);
-
-        /* Build the relinearized-EOM-CC2 active space and omega_fixed. Must come
-           after diagSS (whose CIS eigenvalues set omega_fixed) and before the
-           first sigma evaluation of this irrep. */
+        /* after diagSS, whose CIS eigenvalues set omega_fixed, and before the first sigma */
         if (relin_on()) relin_init(C_irr);
 
         /* Setup and zero initial C2 and S2 vector to go with Hbar_SS */
@@ -317,6 +311,8 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
 #endif
 
         std::vector<bool> converged(eom_params.cs_per_irrep[C_irr], false);
+        /* bound on the share of each root's eigenvector carried by eliminated amplitudes */
+        std::vector<double> relin_share_bound(eom_params.cs_per_irrep[C_irr], 0.0);
         std::vector<double> lambda_old(eom_params.cs_per_irrep[C_irr]);
         // L := Current number of multiroot Davidson vectors. Changes during loop.
         L = eom_params.cs_per_irrep[C_irr];
@@ -443,15 +439,9 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                     }
 
                     if (relin_packed_on()) {
-                        /* Build the spin-adapted trial vector inside the packed
-                           space. Every operand is packed and all of these are
-                           elementwise, so the dots below give exactly what the
-                           full-size ones would -- with no transfer at all, where
-                           materialising cost one full-size buffer per subspace
-                           vector and, in the loop below, per pair. Labels differ
-                           from the full-size "CMnEf"/"CMnfE" that sort_C writes
-                           in the same file: a packed and a full-size buffer
-                           cannot share a psio key. */
+                        /* Spin-adapt and dot entirely in the packed space; the
+                           operations are elementwise, so no unpacking is needed.
+                           The labels must differ from the full-size "CMnEf"/"CMnfE". */
                         RelinPackedScope scope;
                         global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0,
                                                relin_packed_C2_label(i));
@@ -664,10 +654,7 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->file2_close(&CME);
                         global_dpd_->file2_close(&SIA);
 
-                        /* The doubles residual is accumulated in the packed space
-                           when the store is packed, and unpacked once after this
-                           loop -- see below. Materialising both vectors here would
-                           cost two full-size transfers per subspace vector. */
+                        /* when packed, the doubles residual is accumulated after this loop */
                         if (!relin_packed_on()) {
                             sprintf(lbl, "%s %d", "CMnEf", i);
                             global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
@@ -777,12 +764,7 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                     }
                 }
 
-                /* Doubles residual, packed store: every operand is packed and the
-                   operation is elementwise, so accumulating here and unpacking
-                   once yields exactly the vector the full-size accumulation would
-                   have produced -- at one transfer per root instead of two per
-                   subspace vector, which is where the materialising version spent
-                   its time. */
+                /* Packed doubles residual: accumulate in the packed space, unpack once. */
                 if (relin_packed_on()) {
                     dpdbuf4 Pacc, Pc, Ps;
                     relin_packed_init(PSIF_EOM_TMP, "RELIN Racc", C_irr);
@@ -838,6 +820,21 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                 outfile->Printf("%22d%15.10lf%11.2e%12.2e", k + 1, lambda[k], lambda[k] - lambda_old[k], norm);
 
                 /* Check for convergence and add new vector if not converged */
+                if (relin_on()) {
+                    /* The trial vectors are B-orthonormal, so the Ritz vector's norm
+                       is the 2-norm of its coefficients. P and Q are B-orthogonal,
+                       so the completed vector has ||x||^2 + ||rQ||^2 and the share
+                       q/sqrt(1+q^2) is monotonic in the ratio bound q. */
+                    double anorm = 0.0, qsum = 0.0;
+                    for (int ii = 0; ii < L; ++ii) {
+                        anorm += alpha[ii][k] * alpha[ii][k];
+                        qsum += std::fabs(alpha[ii][k]) * relin_vector_q_norm(ii);
+                    }
+                    anorm = std::sqrt(anorm);
+                    double q = (anorm > 0.0) ? qsum / anorm : 0.0;
+                    relin_share_bound[k] = q / std::sqrt(1.0 + q * q);
+                }
+
                 if ((norm > eom_params.residual_tol) || (std::fabs(lambda[k] - lambda_old[k]) > eom_params.eval_tol)) {
                     outfile->Printf("%7s\n", "N");
 
@@ -1032,12 +1029,14 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         }
 
         // => Post-process this symmetry block of states <=
-        // ==> Complete the relinearized eigenvectors <==
-        // Rebuilds each root's eliminated amplitudes at its own converged
-        // eigenvalue and refines the energy, so that everything downstream
-        // (RAMPS, R0, amplitude printing) sees a whole vector rather than just
-        // its explicit part. Must precede write_Rs.
-        if (relin_on()) relin_finalize(C_irr, lambda_old.data(), converged);
+        // ==> Complete the relinearized eigenvectors (before write_Rs) <==
+        if (relin_on()) {
+            if (eom_params.relin_finalize) {
+                relin_reconstruct(C_irr, lambda_old.data(), converged);
+            } else {
+                relin_export_pspace(C_irr, lambda_old.data(), relin_share_bound.data(), converged);
+            }
+        }
         // ==> Write Cs and energies to RAMPS file <==
         write_Rs(C_irr, lambda_old, converged);
         // ==> Compute R0 and normalize - also do any orthogonality checks <==
