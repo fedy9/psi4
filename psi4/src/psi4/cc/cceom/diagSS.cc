@@ -480,6 +480,10 @@ void diagSS(int C_irr) {
                 outfile->Printf("%4d%12.3lf%12.2lf%20.10lf\n", i + 1, lambda_old[i] * pc_hartree2ev,
                                 lambda_old[i] * pc_hartree2wavenumbers, lambda_old[i] + moinfo.eref + moinfo.ecc);
 
+    /* Hand the CIS guess energies to the relinearized EOM-CC2 setup, which uses
+       them to pick omega_fixed and the active-space window. */
+    ss_evals.assign(lambda_old, lambda_old + num_roots);
+
     free(lambda_old);
     free(converged);
     /* collapse solutions to one vector each */

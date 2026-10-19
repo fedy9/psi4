@@ -87,6 +87,12 @@ struct Eom_params {
     int restart_eom_cc3;
     int amps_to_print;
 
+    /* relinearized EOM-CC2 (see relin.cc) */
+    bool relin;
+    double relin_cutoff;
+    double relin_omega_fixed;
+    bool relin_omega_given;
+
     /* compute overlap of normalized R with L (must run cclambda first) */
     int dot_with_L;
     double L0;

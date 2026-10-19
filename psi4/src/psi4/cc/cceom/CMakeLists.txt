@@ -39,6 +39,7 @@ target_sources(cc
     ${CMAKE_CURRENT_SOURCE_DIR}/norm_HC1.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/overlap.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/precondition.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/relin.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/restart.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/restart_with_root.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/rzero.cc

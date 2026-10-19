@@ -160,6 +160,11 @@ void get_eom_params(SharedWavefunction ref_wfn, Options &options) {
     eom_params.max_iter_SS = 500;
     eom_params.guess = options.get_str("EOM_GUESS");
 
+    eom_params.relin = options.get_bool("RELIN");
+    eom_params.relin_cutoff = options.get_double("RELIN_CUTOFF");
+    eom_params.relin_omega_fixed = options.get_double("RELIN_OMEGA_FIXED");
+    eom_params.relin_omega_given = options["RELIN_OMEGA_FIXED"].has_changed();
+
     outfile->Printf("\n\tCCEOM parameters:\n");
     outfile->Printf("\t-----------------\n");
     outfile->Printf("\tStates sought per irrep     =");
@@ -181,6 +186,14 @@ void get_eom_params(SharedWavefunction ref_wfn, Options &options) {
     outfile->Printf("\tGuess vectors taken from    = %s\n", eom_params.guess.c_str());
     outfile->Printf("\tRestart EOM CC3             = %s\n", eom_params.restart_eom_cc3 ? "YES" : "NO");
     outfile->Printf("\tCollapse with last vector   = %s\n", eom_params.collapse_with_last ? "YES" : "NO");
+    outfile->Printf("\tRelinearized inactive doubles = %s\n", eom_params.relin ? "YES" : "NO");
+    if (eom_params.relin) {
+        outfile->Printf("\tRELIN cutoff                = %5.2lf Ha\n", eom_params.relin_cutoff);
+        if (eom_params.relin_omega_given)
+            outfile->Printf("\tRELIN omega_fixed           = %14.10lf (input)\n", eom_params.relin_omega_fixed);
+        else
+            outfile->Printf("\tRELIN omega_fixed           = from CIS guess\n");
+    }
     if (eom_params.follow_root) outfile->Printf("\tRoot following for CC3 turned on.\n");
     outfile->Printf("\n\n");
 }

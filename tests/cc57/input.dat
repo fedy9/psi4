@@ -1,0 +1,43 @@
+#! Relinearized EOM-CC2 (RELIN) on H2O. With omega_fixed set to the exact
+#! eigenvalue, eliminating part of the doubles space is a mathematical identity,
+#! so the excitation energy must come out independent of where the explicit /
+#! eliminated boundary is drawn -- including the two extremes, no doubles
+#! explicit at all and every double explicit. Any dependence on RELIN_CUTOFF
+#! here is an implementation error, not an approximation.
+
+molecule h2o {
+  0 1
+  H
+  O 1 0.9
+  H 2 0.9 1 104.0
+}
+
+set {
+  basis cc-pVDZ
+  roots_per_irrep [0, 0, 1, 0]
+}
+set cceom {
+  r_convergence 1e-7
+  e_convergence 1e-9
+}
+
+# Unpartitioned reference: ordinary EOM-CC2.
+energy('eom-cc2')
+escf = variable('SCF TOTAL ENERGY')
+ecc2 = variable('CC2 TOTAL ENERGY')
+omega_ref = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - ecc2
+
+compare_values(-76.021709732313, escf, 7, "SCF energy")                                   #TEST
+compare_values(-76.222533277834, ecc2, 7, "CC2 energy")                                   #TEST
+compare_values(0.318331019997, omega_ref, 7, "EOM-CC2 excitation energy, unpartitioned")  #TEST
+
+# 0.05 leaves no doubles explicit (everything folded); 50.0 leaves them all
+# explicit (nothing folded); 1.0 is a genuine mixture.
+for cutoff in [0.05, 1.0, 50.0]:
+    clean()
+    set_options({'cceom__relin': True,
+                 'cceom__relin_cutoff': cutoff,
+                 'cceom__relin_omega_fixed': omega_ref})
+    energy('eom-cc2')
+    omega = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
+    compare_values(omega_ref, omega, 7, f"RELIN excitation energy, cutoff {cutoff}")      #TEST

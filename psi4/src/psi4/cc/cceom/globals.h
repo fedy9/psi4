@@ -38,6 +38,8 @@
 #include "psi4/libdpd/dpd.h"
 #include "psi4/libpsi4util/PsiOutStream.h"
 
+#include <vector>
+
 namespace psi {
 
 namespace cceom {
@@ -57,6 +59,10 @@ extern struct Params params;
 extern struct Eom_params eom_params;
 extern struct Local local;
 extern int ***dpd_dp;
+
+/* CIS (singles-singles) guess eigenvalues for the current transition irrep,
+   filled by diagSS. Used by relin_init to pick omega_fixed. */
+extern std::vector<double> ss_evals;
 }
 }  // namespace psi
 
