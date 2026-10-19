@@ -442,21 +442,47 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         psio_read_entry(PSIF_EOM_CME, lbl, (char *)&C0, sizeof(double));
                     }
 
-                    sprintf(lbl, "%s %d", "CMnEf", i);
-                    global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
-                    global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_TMP, "CMnEf");
-                    global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, pqsr, 0, 5, "CMnfE");
-                    global_dpd_->buf4_close(&CMnEf);
+                    if (relin_packed_on()) {
+                        /* Build the spin-adapted trial vector inside the packed
+                           space. Every operand is packed and all of these are
+                           elementwise, so the dots below give exactly what the
+                           full-size ones would -- with no transfer at all, where
+                           materialising cost one full-size buffer per subspace
+                           vector and, in the loop below, per pair. Labels differ
+                           from the full-size "CMnEf"/"CMnfE" that sort_C writes
+                           in the same file: a packed and a full-size buffer
+                           cannot share a psio key. */
+                        RelinPackedScope scope;
+                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0,
+                                               relin_packed_C2_label(i));
+                        global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_TMP, "RELIN G 2C-C");
+                        global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN G CMnfE");
+                        global_dpd_->buf4_close(&CMnEf);
 
-                    global_dpd_->buf4_init(&CMnEf1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnEf");
-                    global_dpd_->buf4_scm(&CMnEf1, 2.0);
-                    global_dpd_->buf4_init(&CMnfE1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnfE");
-                    global_dpd_->buf4_axpy(&CMnfE1, &CMnEf1, -1.0);
-                    global_dpd_->buf4_close(&CMnfE1);
-                    global_dpd_->buf4_close(&CMnEf1);
+                        global_dpd_->buf4_init(&CMnEf1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN G 2C-C");
+                        global_dpd_->buf4_scm(&CMnEf1, 2.0);
+                        global_dpd_->buf4_init(&CMnfE1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN G CMnfE");
+                        global_dpd_->buf4_axpy(&CMnfE1, &CMnEf1, -1.0);
+                        global_dpd_->buf4_close(&CMnfE1);
+                        global_dpd_->buf4_close(&CMnEf1);
 
-                    /* global_dpd_->file2_init(&CME, PSIF_EOM_TMP, C_irr, 0, 1, "CME");*/
-                    global_dpd_->buf4_init(&CMnEf, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnEf");
+                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN G 2C-C");
+                    } else {
+                        sprintf(lbl, "%s %d", "CMnEf", i);
+                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+                        global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_TMP, "CMnEf");
+                        global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, pqsr, 0, 5, "CMnfE");
+                        global_dpd_->buf4_close(&CMnEf);
+
+                        global_dpd_->buf4_init(&CMnEf1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnEf");
+                        global_dpd_->buf4_scm(&CMnEf1, 2.0);
+                        global_dpd_->buf4_init(&CMnfE1, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnfE");
+                        global_dpd_->buf4_axpy(&CMnfE1, &CMnEf1, -1.0);
+                        global_dpd_->buf4_close(&CMnfE1);
+                        global_dpd_->buf4_close(&CMnEf1);
+
+                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "CMnEf");
+                    }
                 } else if (params.eom_ref == 1) {
                     sprintf(lbl, "%s %d", "CME", i);
                     global_dpd_->file2_init(&CME, PSIF_EOM_CME, C_irr, 0, 1, lbl);
@@ -489,16 +515,24 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         sprintf(lbl, "%s %d", "SIA", j);
                         global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
                         tval = 2.0 * global_dpd_->file2_dot(&CME, &SIA);
-                        sprintf(lbl, "%s %d", "SIjAb", j);
-                        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
-                        tval += global_dpd_->buf4_dot(&CMnEf, &SIjAb);
+                        if (relin_packed_on()) {
+                            RelinPackedScope scope;
+                            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0,
+                                                   relin_packed_S2_label(j));
+                            tval += global_dpd_->buf4_dot(&CMnEf, &SIjAb);
+                            global_dpd_->buf4_close(&SIjAb);
+                        } else {
+                            sprintf(lbl, "%s %d", "SIjAb", j);
+                            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
+                            tval += global_dpd_->buf4_dot(&CMnEf, &SIjAb);
+                            global_dpd_->buf4_close(&SIjAb);
+                        }
                         global_dpd_->file2_close(&SIA);
                         if (params.full_matrix) {
                             sprintf(lbl, "%s %d", "S0", j);
                             psio_read_entry(PSIF_EOM_SIA, lbl, (char *)&S0, sizeof(double));
                             tval += C0 * S0;
                         }
-                        global_dpd_->buf4_close(&SIjAb);
                     } else if (params.eom_ref == 1) {
                         sprintf(lbl, "%s %d", "SIA", j);
                         global_dpd_->file2_init(&SIA, PSIF_EOM_SIA, C_irr, 0, 1, lbl);
@@ -547,7 +581,12 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                 }
 
                 global_dpd_->file2_close(&CME);
-                global_dpd_->buf4_close(&CMnEf);
+                if (relin_packed_on()) {
+                    RelinPackedScope scope;
+                    global_dpd_->buf4_close(&CMnEf);
+                } else {
+                    global_dpd_->buf4_close(&CMnEf);
+                }
                 if (params.eom_ref > 0) {
                     global_dpd_->file2_close(&Cme);
                     global_dpd_->buf4_close(&CMNEF);
@@ -625,14 +664,20 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->file2_close(&CME);
                         global_dpd_->file2_close(&SIA);
 
-                        sprintf(lbl, "%s %d", "CMnEf", i);
-                        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
-                        sprintf(lbl, "%s %d", "SIjAb", i);
-                        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
-                        global_dpd_->buf4_axpbycz(&CMnEf, &SIjAb, &RIjAb, -1.0 * lambda[k] * alpha[i][k], alpha[i][k],
-                                                  1.0);
-                        global_dpd_->buf4_close(&CMnEf);
-                        global_dpd_->buf4_close(&SIjAb);
+                        /* The doubles residual is accumulated in the packed space
+                           when the store is packed, and unpacked once after this
+                           loop -- see below. Materialising both vectors here would
+                           cost two full-size transfers per subspace vector. */
+                        if (!relin_packed_on()) {
+                            sprintf(lbl, "%s %d", "CMnEf", i);
+                            global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+                            sprintf(lbl, "%s %d", "SIjAb", i);
+                            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
+                            global_dpd_->buf4_axpbycz(&CMnEf, &SIjAb, &RIjAb, -1.0 * lambda[k] * alpha[i][k],
+                                                      alpha[i][k], 1.0);
+                            global_dpd_->buf4_close(&CMnEf);
+                            global_dpd_->buf4_close(&SIjAb);
+                        }
 
                         if (params.full_matrix) {
                             sprintf(lbl, "%s %d", "S0", i);
@@ -730,6 +775,33 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
                         global_dpd_->buf4_close(&Cmnef);
                         global_dpd_->buf4_close(&Sijab);
                     }
+                }
+
+                /* Doubles residual, packed store: every operand is packed and the
+                   operation is elementwise, so accumulating here and unpacking
+                   once yields exactly the vector the full-size accumulation would
+                   have produced -- at one transfer per root instead of two per
+                   subspace vector, which is where the materialising version spent
+                   its time. */
+                if (relin_packed_on()) {
+                    dpdbuf4 Pacc, Pc, Ps;
+                    relin_packed_init(PSIF_EOM_TMP, "RELIN Racc", C_irr);
+                    {
+                        RelinPackedScope scope;
+                        global_dpd_->buf4_init(&Pacc, PSIF_EOM_TMP, C_irr, 0, 5, 0, 5, 0, "RELIN Racc");
+                        for (int i = 0; i < L; ++i) {
+                            global_dpd_->buf4_init(&Pc, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0,
+                                                   relin_packed_C2_label(i));
+                            global_dpd_->buf4_init(&Ps, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0,
+                                                   relin_packed_S2_label(i));
+                            global_dpd_->buf4_axpbycz(&Pc, &Ps, &Pacc, -1.0 * lambda[k] * alpha[i][k], alpha[i][k],
+                                                      1.0);
+                            global_dpd_->buf4_close(&Ps);
+                            global_dpd_->buf4_close(&Pc);
+                        }
+                        global_dpd_->buf4_close(&Pacc);
+                    }
+                    relin_unpack(PSIF_EOM_TMP, "RELIN Racc", PSIF_EOM_R, "RIjAb", C_irr);
                 }
 
 #ifdef EOM_DEBUG
@@ -1070,6 +1142,7 @@ void diag(ccenergy::CCEnergyWavefunction &wfn) {
         if (params.overlap) overlap_stash(C_irr);
 
         free_block(alpha_old);
+        if (relin_on()) relin_packed_teardown();
     }  // End Master Loop
 
     // => Save Psivars <=
@@ -1209,6 +1282,10 @@ void init_C2(int i, int C_irr) {
     dpdbuf4 CMNEF, Cmnef, CMnEf;
     char lbl[32];
     if (params.eom_ref == 0) {
+        if (relin_packed_on()) {
+            relin_packed_init(PSIF_EOM_CMnEf, relin_packed_C2_label(i), C_irr);
+            return;
+        }
         sprintf(lbl, "%s %d", "CMnEf", i);
         global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
         global_dpd_->buf4_scm(&CMnEf, 0.0);
@@ -1244,6 +1321,10 @@ void init_S2(int i, int C_irr) {
     dpdbuf4 SIJAB, Sijab, SIjAb;
     char lbl[32];
     if (params.eom_ref == 0) {
+        if (relin_packed_on()) {
+            relin_packed_init(PSIF_EOM_SIjAb, relin_packed_S2_label(i), C_irr);
+            return;
+        }
         sprintf(lbl, "%s %d", "SIjAb", i);
         global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, 0, 5, 0, 5, 0, lbl);
         global_dpd_->buf4_scm(&SIjAb, 0.0);

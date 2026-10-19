@@ -164,6 +164,7 @@ void get_eom_params(SharedWavefunction ref_wfn, Options &options) {
     eom_params.relin_cutoff = options.get_double("RELIN_CUTOFF");
     eom_params.relin_omega_fixed = options.get_double("RELIN_OMEGA_FIXED");
     eom_params.relin_omega_given = options["RELIN_OMEGA_FIXED"].has_changed();
+    eom_params.relin_packed = options.get_bool("RELIN_PACKED");
 
     outfile->Printf("\n\tCCEOM parameters:\n");
     outfile->Printf("\t-----------------\n");

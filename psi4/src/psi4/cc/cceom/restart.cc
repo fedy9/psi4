@@ -41,6 +41,7 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
 
 namespace psi {
 namespace cceom {
@@ -168,14 +169,25 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         global_dpd_->file2_close(&C1);
 
         sprintf(lbl, "%s %d", "CMnEf", L + i);
-        global_dpd_->buf4_init(&C2, PSIF_EOM_CMnEf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+        /* The accumulation target cannot share a working buffer with the
+           sources being summed into it, so it gets its own scratch. */
+        int accf_CMnEf = PSIF_EOM_CMnEf;
+        const char *accl_CMnEf = lbl;
+        if (relin_packed_on()) {
+            accf_CMnEf = relin_work_file();
+            accl_CMnEf = relin_acc_label();
+        }
+        global_dpd_->buf4_init(&C2, accf_CMnEf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, accl_CMnEf);
         global_dpd_->buf4_scm(&C2, 0.0);
         for (j = 0; j < L; ++j) {
-            sprintf(lbl, "%s %d", "CMnEf", j);
-            global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+            int srcf;
+            const char *srcl;
+            relin_open_C2(j, C_irr, &srcf, &srcl);
+            global_dpd_->buf4_init(&CMnEf, srcf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, srcl);
             global_dpd_->buf4_axpy(&CMnEf, &C2, alpha_tot[j][i]);
             global_dpd_->buf4_close(&CMnEf);
         }
+        if (relin_packed_on()) relin_put_C2(L + i, C_irr, &C2);
         global_dpd_->buf4_close(&C2);
 
         if (params.eom_ref > 0) {
@@ -235,14 +247,25 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         global_dpd_->file2_close(&C1);
 
         sprintf(lbl, "%s %d", "SIjAb", L + i);
-        global_dpd_->buf4_init(&C2, PSIF_EOM_SIjAb, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+        /* The accumulation target cannot share a working buffer with the
+           sources being summed into it, so it gets its own scratch. */
+        int accf_SIjAb = PSIF_EOM_SIjAb;
+        const char *accl_SIjAb = lbl;
+        if (relin_packed_on()) {
+            accf_SIjAb = relin_work_file();
+            accl_SIjAb = relin_acc_label();
+        }
+        global_dpd_->buf4_init(&C2, accf_SIjAb, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, accl_SIjAb);
         global_dpd_->buf4_scm(&C2, 0.0);
         for (j = 0; j < L; ++j) {
-            sprintf(lbl, "%s %d", "SIjAb", j);
-            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+            int srcf;
+            const char *srcl;
+            relin_open_S2(j, C_irr, &srcf, &srcl);
+            global_dpd_->buf4_init(&SIjAb, srcf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, srcl);
             global_dpd_->buf4_axpy(&SIjAb, &C2, alpha_tot[j][i]);
             global_dpd_->buf4_close(&SIjAb);
         }
+        if (relin_packed_on()) relin_put_S2(L + i, C_irr, &C2);
         global_dpd_->buf4_close(&C2);
 
         if (params.eom_ref > 0) {
@@ -288,11 +311,16 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         sprintf(lbl, "%s %d", "CME", i);
         global_dpd_->file2_copy(&CME, PSIF_EOM_CME, lbl);
         global_dpd_->file2_close(&CME);
-        sprintf(lbl, "%s %d", "CMnEf", L + i);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
-        sprintf(lbl, "%s %d", "CMnEf", i);
-        global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_CMnEf, lbl);
-        global_dpd_->buf4_close(&CMnEf);
+        if (relin_packed_on()) {
+            relin_load_C2(L + i, C_irr);
+            relin_save_C2(i, C_irr);
+        } else {
+            sprintf(lbl, "%s %d", "CMnEf", L + i);
+            global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+            sprintf(lbl, "%s %d", "CMnEf", i);
+            global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_CMnEf, lbl);
+            global_dpd_->buf4_close(&CMnEf);
+        }
         if (params.full_matrix) {
             sprintf(lbl, "%s %d", "C0", L + i);
             psio_read_entry(PSIF_EOM_CME, lbl, (char *)&CME0, sizeof(double));
@@ -323,11 +351,16 @@ void restart(double **alpha, int L, int num, int C_irr, int ortho, double **alph
         sprintf(lbl, "%s %d", "SIA", i);
         global_dpd_->file2_copy(&SIA, PSIF_EOM_SIA, lbl);
         global_dpd_->file2_close(&SIA);
-        sprintf(lbl, "%s %d", "SIjAb", L + i);
-        global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
-        sprintf(lbl, "%s %d", "SIjAb", i);
-        global_dpd_->buf4_copy(&SIjAb, PSIF_EOM_SIjAb, lbl);
-        global_dpd_->buf4_close(&SIjAb);
+        if (relin_packed_on()) {
+            relin_load_S2(L + i, C_irr);
+            relin_save_S2(i, C_irr);
+        } else {
+            sprintf(lbl, "%s %d", "SIjAb", L + i);
+            global_dpd_->buf4_init(&SIjAb, PSIF_EOM_SIjAb, C_irr, AB_OCC, AB_VIR, AB_OCC, AB_VIR, 0, lbl);
+            sprintf(lbl, "%s %d", "SIjAb", i);
+            global_dpd_->buf4_copy(&SIjAb, PSIF_EOM_SIjAb, lbl);
+            global_dpd_->buf4_close(&SIjAb);
+        }
         if (params.full_matrix) {
             sprintf(lbl, "%s %d", "S0", L + i);
             psio_read_entry(PSIF_EOM_SIA, lbl, (char *)&S0, sizeof(double));

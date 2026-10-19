@@ -37,6 +37,8 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
+#include <cstring>
 
 namespace psi {
 namespace cceom {
@@ -133,7 +135,58 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
 
     if (params.full_matrix) psio_read_entry(PSIF_EOM_R, "R0", (char *)&R0, sizeof(double));
 
-    for (i = 0; i < *numCs; i++) {
+    if (relin_packed_on()) {
+        /* Orthogonalise against the stored vectors inside the packed space. The
+           full-size route needs three full-size buffers per stored vector (the
+           residual's copy, its sort, and the stored vector materialised); this
+           needs one transfer in and one out, whatever the subspace size. Every
+           operand is packed and all of it is elementwise or a dot, so the result
+           is what the full-size route produced, not an approximation of it.
+           The caller's buffer is closed first, so nothing is cached behind our
+           back, and restored afterwards for the tail below. */
+        int rf = RIjAb->file.filenum;
+        char rl[PSIO_KEYLEN];
+        strncpy(rl, RIjAb->file.label, PSIO_KEYLEN - 1);
+        rl[PSIO_KEYLEN - 1] = '\0';
+        global_dpd_->buf4_close(RIjAb);
+        relin_pack(rf, rl, PSIF_EOM_TMP, "RELIN SA R2", irrep);
+
+        for (i = 0; i < *numCs; i++) {
+            sprintf(CME_lbl, "%s %d", "CME", i);
+            global_dpd_->file2_init(&CME, PSIF_EOM_CME, irrep, 0, 1, CME_lbl);
+            dotval = 2.0 * global_dpd_->file2_dot(RIA, &CME);
+            {
+                RelinPackedScope scope;
+                dpdbuf4 Rp;
+                global_dpd_->buf4_init(&Rp, PSIF_EOM_TMP, irrep, 0, 5, 0, 5, 0, "RELIN SA R2");
+                /* spin-adapt the residual: 2 R(Ij,Ab) - R(Ij,bA) */
+                global_dpd_->buf4_copy(&Rp, PSIF_EOM_TMP, "RELIN SA 2R-R");
+                global_dpd_->buf4_sort(&Rp, PSIF_EOM_TMP, pqsr, 0, 5, "RELIN SA RIjbA");
+                global_dpd_->buf4_init(&R2a, PSIF_EOM_TMP, irrep, 0, 5, 0, 5, 0, "RELIN SA 2R-R");
+                global_dpd_->buf4_scm(&R2a, 2.0);
+                global_dpd_->buf4_init(&R2b, PSIF_EOM_TMP, irrep, 0, 5, 0, 5, 0, "RELIN SA RIjbA");
+                global_dpd_->buf4_axpy(&R2b, &R2a, -1.0);
+                global_dpd_->buf4_close(&R2b);
+
+                global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, irrep, 0, 5, 0, 5, 0, relin_packed_C2_label(i));
+                dotval += global_dpd_->buf4_dot(&R2a, &CMnEf);
+                global_dpd_->buf4_close(&R2a);
+                global_dpd_->buf4_axpy(&CMnEf, &Rp, -1.0 * dotval);
+                global_dpd_->buf4_close(&CMnEf);
+                global_dpd_->buf4_close(&Rp);
+            }
+            global_dpd_->file2_axpy(&CME, RIA, -1.0 * dotval, 0);
+            global_dpd_->file2_close(&CME);
+        }
+
+        relin_unpack(PSIF_EOM_TMP, "RELIN SA R2", rf, rl, irrep);
+        global_dpd_->buf4_init(RIjAb, rf, irrep, 0, 5, 0, 5, 0, rl);
+    }
+
+    /* The full-size route below is skipped when the packed loop above ran. */
+    const int n_ortho = relin_packed_on() ? 0 : *numCs;
+
+    for (i = 0; i < n_ortho; i++) {
         /* Spin-adapt the residual */
         global_dpd_->buf4_copy(RIjAb, PSIF_EOM_TMP, "RIjAb");
         global_dpd_->buf4_sort(RIjAb, PSIF_EOM_TMP, pqsr, 0, 5, "RIjbA");
@@ -147,7 +200,12 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
         sprintf(CME_lbl, "%s %d", "CME", i);
         sprintf(CMnEf_lbl, "%s %d", "CMnEf", i);
         global_dpd_->file2_init(&CME, PSIF_EOM_CME, irrep, 0, 1, CME_lbl);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, irrep, 0, 5, 0, 5, 0, CMnEf_lbl);
+        {
+            int c2f;
+            const char *c2l;
+            relin_open_C2(i, irrep, &c2f, &c2l);
+            global_dpd_->buf4_init(&CMnEf, c2f, irrep, 0, 5, 0, 5, 0, c2l);
+        }
         dotval = 2.0 * global_dpd_->file2_dot(RIA, &CME);
         // outfile->Printf( "OE Dotval for vector %d = %20.14f\n", i, dotval);
         dotval += global_dpd_->buf4_dot(&R2a, &CMnEf);
@@ -203,7 +261,7 @@ void schmidt_add_RHF(dpdfile2 *RIA, dpdbuf4 *RIjAb, int *numCs, int irrep) {
         sprintf(CMnEf_lbl, "%s %d", "CMnEf", *numCs);
 
         global_dpd_->file2_copy(RIA, PSIF_EOM_CME, CME_lbl);
-        global_dpd_->buf4_copy(RIjAb, PSIF_EOM_CMnEf, CMnEf_lbl);
+        relin_put_C2(*numCs, irrep, RIjAb);
 
         /* Generate AA and BB C2 vectors from AB vector */
         /* C(IJ,AB) = C(ij,ab) = C(Ij,Ab) - C(Ij,bA) */

@@ -2303,6 +2303,17 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         elimination exact for that root, which is how the implementation is
         verified. -*/
         options.add_double("RELIN_OMEGA_FIXED", 0.0);
+        /*- Hold the explicit doubles of a !RELIN! computation in a buffer
+        dimensioned by the active space instead of the full one, so that both the
+        Davidson subspace storage and the cost of the dots and axpys over it scale
+        with the active fraction rather than the full doubles space. Measured on
+        furan/cc-pVDZ: 1.6-1.8 times faster and 6-29 times smaller, over active
+        fractions from 12% down to 0.07%. The arithmetic is mathematically the
+        same, but the packed buffers sum their elements in a different order, so
+        results agree with the unpacked path to roughly 1e-13 rather than to the
+        last bit -- far below any convergence threshold, and exactly bitwise when
+        the active space is the whole doubles space. -*/
+        options.add_bool("RELIN_PACKED", true);
         /*- Complex tolerance applied in CCEOM computations -*/
         options.add_double("COMPLEX_TOLERANCE", 1E-12);
         /*- Convergence criterion for norm of the residual vector in the Davidson algorithm for CC-EOM. -*/

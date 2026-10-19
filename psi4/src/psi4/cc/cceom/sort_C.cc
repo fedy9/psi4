@@ -38,6 +38,7 @@
 #include "Params.h"
 #include "Local.h"
 #include "globals.h"
+#include "relin.h"
 
 namespace psi {
 namespace cceom {
@@ -45,6 +46,8 @@ namespace cceom {
 
 void sort_C(int C_index, int C_irr) {
     dpdbuf4 CMNEF, Cmnef, CMnEf, CMnfE, CMneF, C2;
+    int c2f = PSIF_EOM_CMnEf;
+    const char *c2l = nullptr;
     char lbl[32];
 
     /* Copy used in WmbejDD */
@@ -71,8 +74,8 @@ void sort_C(int C_index, int C_irr) {
     /* now do sorts of CMnEf */
     if (params.eom_ref < 2) {
         /* Copy used in WmbejDD */
-        sprintf(lbl, "%s %d", "CMnEf", C_index);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+        relin_open_C2(C_index, C_irr, &c2f, &c2l);
+        global_dpd_->buf4_init(&CMnEf, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, prqs, 10, 10, "CMEnf");
         /* Copy used in WmnieSD */
         global_dpd_->buf4_sort(&CMnEf, PSIF_EOM_TMP, qprs, 0, 5, "CnMEf");
@@ -124,7 +127,8 @@ void sort_C(int C_index, int C_irr) {
 
     if (params.eom_ref == 0) { /* special sorts for RHF */
         sprintf(lbl, "%s %d", "CMnEf", C_index);
-        global_dpd_->buf4_init(&CMnEf, PSIF_EOM_CMnEf, C_irr, 0, 5, 0, 5, 0, lbl);
+        relin_open_C2(C_index, C_irr, &c2f, &c2l);
+        global_dpd_->buf4_init(&CMnEf, c2f, C_irr, 0, 5, 0, 5, 0, c2l);
         global_dpd_->buf4_copy(&CMnEf, PSIF_EOM_TMP, "2CMnEf - CMnfE");
         global_dpd_->buf4_close(&CMnEf);
 
