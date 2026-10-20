@@ -3769,15 +3769,21 @@ def run_detci_property(name, **kwargs):
 
 def run_eom_cc(name, **kwargs):
     """Function encoding sequence of PSI module calls for
-    an EOM-CC calculation, namely EOM-CC2, EOM-CCSD, and EOM-CC3.
+    an EOM-CC calculation, namely EOM-CC2, relinearized EOM-CC2, EOM-CCSD, and EOM-CC3.
 
     """
+    # RELIN is set below from the method name; a user setting would otherwise be
+    # silently overridden. Checked before anything is stashed or changed.
+    if core.get_option('CCEOM', 'RELIN') and name != 'relin-eom-cc2':
+        raise ValidationError("RELIN is selected by the method name: use energy('relin-eom-cc2').")
+
     optstash = p4util.OptionsState(
         ['TRANSQT2', 'WFN'],
         ['CCSORT', 'WFN'],
         ['CCENERGY', 'WFN'],
         ['CCHBAR', 'WFN'],
-        ['CCEOM', 'WFN'])
+        ['CCEOM', 'WFN'],
+        ['CCEOM', 'RELIN'])
 
     if name == 'eom-ccsd':
         core.set_local_option('TRANSQT2', 'WFN', 'EOM_CCSD')
@@ -3787,7 +3793,7 @@ def run_eom_cc(name, **kwargs):
         core.set_local_option('CCEOM', 'WFN', 'EOM_CCSD')
         ref_wfn = run_ccenergy('ccsd', **kwargs)
 
-    elif name == 'eom-cc2':
+    elif name in ['eom-cc2', 'relin-eom-cc2']:
         user_ref = core.get_option('CCENERGY', 'REFERENCE')
         if (user_ref != 'RHF') and (user_ref != 'UHF'):
             raise ValidationError('Reference %s for EOM-CC2 is not available.' % user_ref)
@@ -3805,6 +3811,9 @@ def run_eom_cc(name, **kwargs):
         core.set_local_option('CCHBAR', 'WFN', 'EOM_CC3')
         core.set_local_option('CCEOM', 'WFN', 'EOM_CC3')
         ref_wfn = run_ccenergy('cc3', **kwargs)
+
+    # The method name alone decides whether the inactive doubles are folded.
+    core.set_local_option('CCEOM', 'RELIN', name == 'relin-eom-cc2')
 
     core.cchbar(ref_wfn)
     core.cceom(ref_wfn)

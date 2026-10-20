@@ -1,4 +1,4 @@
-#! Relinearized EOM-CC2 (RELIN) on H2O. With omega_fixed set to the exact
+#! Relinearized EOM-CC2 (relin-eom-cc2) on H2O. With omega_fixed set to the exact
 #! eigenvalue, eliminating part of the doubles space is a mathematical identity,
 #! so the excitation energy must come out independent of where the explicit /
 #! eliminated boundary is drawn -- including the two extremes, no doubles
@@ -32,16 +32,34 @@ compare_values(-76.021709732313, escf, 7, "SCF energy")                         
 compare_values(-76.222533277834, ecc2, 7, "CC2 energy")                                   #TEST
 compare_values(0.318331019997, omega_ref, 7, "EOM-CC2 excitation energy, unpartitioned")  #TEST
 
+# The method name, not the RELIN option, switches the elimination on. With
+# omega_fixed left to the CIS guess, the raw relinearized eigenvalue must differ
+# from EOM-CC2; and setting RELIN with energy('eom-cc2') must be rejected.
+clean()
+set_options({'cceom__relin_finalize': False})
+energy('relin-eom-cc2')
+omega_raw = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
+compare(True, abs(omega_raw - omega_ref) > 1e-4, "relin-eom-cc2 folds the inactive doubles")  #TEST
+
+clean()
+set_options({'cceom__relin': True})
+try:
+    energy('eom-cc2')
+    rejected = False
+except ValidationError:
+    rejected = True
+compare(True, rejected, "eom-cc2 rejects a RELIN option")                                  #TEST
+set_options({'cceom__relin': False})
+
 # 0.05 leaves no doubles explicit (everything folded); 50.0 leaves them all
 # explicit (nothing folded); 1.0 is a genuine mixture.
 for cutoff in [0.05, 1.0, 50.0]:
     clean()
-    set_options({'cceom__relin': True,
-                 'cceom__relin_cutoff': cutoff,
+    set_options({'cceom__relin_cutoff': cutoff,
                  'cceom__relin_omega_fixed': omega_ref,
                  'cceom__relin_packed': False,
                  'cceom__relin_finalize': False})
-    energy('eom-cc2')
+    energy('relin-eom-cc2')
     omega = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega_ref, omega, 7, f"RELIN excitation energy, cutoff {cutoff}")      #TEST
 
@@ -49,18 +67,17 @@ for cutoff in [0.05, 1.0, 50.0]:
     # unfolded operator must give the same answer.
     clean()
     set_options({'cceom__relin_finalize': True})
-    energy('eom-cc2')
+    energy('relin-eom-cc2')
     omega_ritz = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega_ref, omega_ritz, 7, f"RELIN Ritz value, cutoff {cutoff}")         #TEST
     set_options({'cceom__relin_finalize': False})
 
     # Packed storage sums in a different order, so it agrees to rounding only.
     clean()
-    set_options({'cceom__relin': True,
-                 'cceom__relin_cutoff': cutoff,
+    set_options({'cceom__relin_cutoff': cutoff,
                  'cceom__relin_omega_fixed': omega_ref,
                  'cceom__relin_packed': True})
-    energy('eom-cc2')
+    energy('relin-eom-cc2')
     omega_packed = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
     compare_values(omega, omega_packed, 12, f"RELIN packed == unpacked, cutoff {cutoff}")  #TEST
 
@@ -69,7 +86,6 @@ for cutoff in [0.05, 1.0, 50.0]:
 # with packed storage.
 clean()
 set_options({'freeze_core': True,
-             'cceom__relin': False,
              'cceom__relin_packed': False,
              'cceom__relin_finalize': True,
              'cceom__relin_omega_fixed': 0.0})
@@ -80,11 +96,10 @@ for cutoff in [0.05, 1.0, 50.0]:
     for packed in [False, True]:
         clean()
         set_options({'freeze_core': True,
-                     'cceom__relin': True,
                      'cceom__relin_cutoff': cutoff,
                      'cceom__relin_omega_fixed': omega_ref_fc,
                      'cceom__relin_packed': packed})
-        energy('eom-cc2')
+        energy('relin-eom-cc2')
         omega_fc = variable('CC2 ROOT 0 (IN B1) TOTAL ENERGY') - variable('CC2 TOTAL ENERGY')
         tag = "packed" if packed else "unpacked"
         compare_values(omega_ref_fc, omega_fc, 7,

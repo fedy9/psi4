@@ -128,6 +128,7 @@ method_governing_type_keywords = {
 
         "ep2"          : "mp2_type",
         "eom-cc2"      : "cc_type",
+        "relin-eom-cc2": "cc_type",
         "eom-ccsd"     : "cc_type",
         "eom-cc3"      : "cc_type",
 

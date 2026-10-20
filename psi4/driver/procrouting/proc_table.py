@@ -127,6 +127,7 @@ procedures = {
         'bccd(t)'       : proc.run_bccd,
         'eom-ccsd'      : proc.run_eom_cc,
         'eom-cc2'       : proc.run_eom_cc,
+        'relin-eom-cc2' : proc.run_eom_cc,
         'eom-cc3'       : proc.run_eom_cc,
         'detci'         : proc.run_detci,  # full control over detci
         # 'mp'          : proc.run_detci,  # arbitrary order mp(n)  # Aug 2022 reworked below to add levels directly

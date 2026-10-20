@@ -2289,7 +2289,8 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         EOM-CC2 computation, leaving the singles plus an active corner of the
         doubles as explicit unknowns? The eliminated amplitudes are obtained
         analytically at a fixed omega, which is exact when that omega equals the
-        true eigenvalue. EOM_CC2 with an RHF reference and canonical orbitals only. -*/
+        true eigenvalue. Set by the driver for ``energy('relin-eom-cc2')``; do not
+        set directly. RHF reference and canonical orbitals only. !expert -*/
         options.add_bool("RELIN", false);
         /*- Active-space cutoff for !RELIN!, in hartree. An orbital is active if its
         smallest single-excitation gap lies within this distance above
@@ -2303,10 +2304,11 @@ int read_options(const std::string &name, Options &options, bool suppress_printi
         elimination exact for that root, which is how the implementation is
         verified. -*/
         options.add_double("RELIN_OMEGA_FIXED", 0.0);
-        /*- Store the explicit doubles of a !RELIN! computation in buffers
-        dimensioned by the active space rather than the full doubles space, so the
-        Davidson subspace storage and the work over it scale with the active
-        fraction. Results agree with the unpacked storage to rounding. -*/
+        /*- Store the explicit doubles of a relin-eom-cc2 computation in buffers
+        dimensioned by the active space (the default), so the Davidson subspace
+        storage and the work over it scale with the active fraction. Turning this
+        off keeps them full size, with identical results to rounding; it exists to
+        cross-check the packed layout. !expert -*/
         options.add_bool("RELIN_PACKED", true);
         /*- Do finalize the converged !RELIN! eigenvectors? Reconstructs each root's
         eliminated amplitudes at its own eigenvalue, stores the full vector, and
